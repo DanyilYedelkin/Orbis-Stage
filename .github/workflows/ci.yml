@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libx11-dev libxrandr-dev libxinerama-dev \
+                                  libxcursor-dev libxi-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DORBIS_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+  sanitizers:
+    name: ASan + UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (core + tests only)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DORBIS_SANITIZERS=ON -DORBIS_BUILD_APP=OFF -DORBIS_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  render-smoke-test:
+    # Renders real frames on a GPU-less runner (Xvfb + Mesa llvmpipe software OpenGL 4.5).
+    # Catches shader compile errors and GL setup bugs that unit tests cannot see.
+    name: Headless render
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libx11-dev libxrandr-dev libxinerama-dev \
+                                  libxcursor-dev libxi-dev xvfb libgl1-mesa-dri
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DORBIS_BUILD_TESTS=OFF
+          cmake --build build
+      - name: Render frames
+        run: |
+          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --screenshot orbit.ppm
+          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --view 40,10,1500,20,-25 --screenshot oblique.ppm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames
+          path: "*.ppm"
