@@ -4,7 +4,7 @@
 #include "core/math/Frustum.hpp"
 #include "core/terrain/ChunkMesh.hpp"
 #include "core/terrain/CubeSphere.hpp"
-#include "core/terrain/HeightField.hpp"
+#include "core/terrain/ElevationSource.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -63,7 +63,7 @@ bool isAncestor(const NodeKey& a, const NodeKey& b);
 /// Height interval above the ellipsoid, metres.
 struct HeightRange {
     double min = 0.0;
-    double max = HeightField::maxElevation();
+    double max = kMaxTerrainElevation;
 };
 
 struct BoundingSphere {

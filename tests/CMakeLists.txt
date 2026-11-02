@@ -8,9 +8,11 @@ add_executable(orbis_tests
     test_camera.cpp
     test_lod.cpp
     test_culling.cpp
-    test_chunk_builder.cpp)
+    test_chunk_builder.cpp
+    test_earth.cpp)
 
 target_link_libraries(orbis_tests PRIVATE orbis::core Catch2::Catch2WithMain)
+target_compile_definitions(orbis_tests PRIVATE ORBIS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
 orbis_configure_target(orbis_tests)
 
 include(Catch)

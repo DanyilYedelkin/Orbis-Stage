@@ -6,14 +6,20 @@
 #include "app/gl/RenderTarget.hpp"
 #include "core/geo/Ellipsoid.hpp"
 #include "core/scene/Camera.hpp"
-#include "core/terrain/HeightField.hpp"
+#include "core/terrain/ElevationSource.hpp"
+
+#include <memory>
 
 #include <optional>
 #include <string>
 
 namespace orbis {
 
+enum class World { Earth, Procedural };
+
 struct AppOptions {
+    World world = World::Earth;
+    std::optional<std::string> elevationFile; ///< Overrides the bundled Earth data.
     int width = 1600;
     int height = 900;
     std::optional<std::string> screenshotPath; ///< Render one frame, save it, exit (for CI).
@@ -62,11 +68,11 @@ private:
 
     // Declaration order = construction order; destruction runs in REVERSE:
     //  - Window first  => the GL context outlives every GL object declared below it.
-    //  - HeightField before Terrain => Terrain's worker threads (which read the height field)
-    //    are joined before the height field is destroyed.
+    //  - Elevation source before Terrain => Terrain's worker threads (which read it) are joined
+    //    before the source is destroyed.
     Window window_;
     Ellipsoid ellipsoid_ = Ellipsoid::wgs84();
-    HeightField heightField_{20261102};
+    std::unique_ptr<const ElevationSource> elevation_;
     Camera camera_{ellipsoid_};
     gl::RenderTarget renderTarget_;
     Sky sky_;

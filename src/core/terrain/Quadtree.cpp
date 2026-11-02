@@ -1,7 +1,7 @@
 #include "core/terrain/Quadtree.hpp"
 
 #include "core/geo/Horizon.hpp"
-#include "core/terrain/HeightField.hpp"
+#include "core/terrain/ElevationSource.hpp"
 
 #include <algorithm>
 #include <array>
@@ -62,7 +62,7 @@ BoundingSphere TerrainLod::bounds(const NodeKey& key, const HeightRange& heights
 HeightRange TerrainLod::subtreeRange(const NodeKey& key, const HeightRange& meshRange) const {
     const double margin = 2.0 * vertexSpacing(key);
     return {std::max(meshRange.min - margin, 0.0),
-            std::min(meshRange.max + margin, HeightField::maxElevation())};
+            std::min(meshRange.max + margin, kMaxTerrainElevation)};
 }
 
 bool TerrainLod::isCulled(const BoundingSphere& b, const LodView& view, LodSelection& out) const {

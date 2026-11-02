@@ -16,17 +16,17 @@ constexpr std::size_t kMaxResidentChunks = 3000;   // ~100 MB of vertex data at 
 constexpr std::uint64_t kEvictAfterFrames = 600;   // ~10 s unused at 60 fps
 } // namespace
 
-Terrain::Terrain(const Ellipsoid& ellipsoid, const HeightField& heightField,
+Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
                  const LodSettings& settings)
     : ellipsoid_(ellipsoid), lod_(ellipsoid, settings),
       shader_(shaders::terrain_vert, gl::composeShader(shaders::common_glsl, shaders::terrain_frag),
               "terrain"),
       indexBuffer_(gl::createBuffer()),
-      // The lambda captures the ellipsoid by value and the height field by reference: the
-      // HeightField is immutable after construction, so concurrent reads are safe.
+      // The lambda captures the ellipsoid by value and the elevation source by reference:
+      // sources are immutable after construction, so concurrent reads are safe.
       builder_(
-          [ellipsoid, &heightField, n = settings.quadsPerEdge](const NodeKey& key) {
-              return buildChunkMesh(key.region(), n, ellipsoid, heightField);
+          [ellipsoid, &elevation, n = settings.quadsPerEdge](const NodeKey& key) {
+              return buildChunkMesh(key.region(), n, ellipsoid, elevation);
           },
           ChunkBuilder::defaultThreadCount()) {
     const std::vector<std::uint16_t> indices = buildChunkIndices(settings.quadsPerEdge);

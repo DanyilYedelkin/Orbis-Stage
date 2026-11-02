@@ -8,8 +8,9 @@
 namespace {
 
 void printUsage() {
-    std::cout << "Usage: orbis [--size WxH] [--view lat,lon,altKm,heading,pitch] [--lod-colors]\n"
-                 "             [--sun azimuth,elevation] [--screenshot file.ppm]\n"
+    std::cout << "Usage: orbis [--world earth|procedural] [--elevation file.oeg] [--size WxH]\n"
+                 "             [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation]\n"
+                 "             [--lod-colors] [--screenshot file.ppm]\n"
                  "Controls: RMB + mouse look | WASD move | Space/E up | Ctrl/Q down |\n"
                  "          Shift boost | wheel speed | [ ] detail | F1 wireframe |\n"
                  "          F2 freeze LOD | F3 LOD colours | Esc quit\n";
@@ -42,6 +43,18 @@ int main(int argc, char** argv) {
                 std::cerr << "Invalid --sun, expected azimuth,elevation e.g. 225,30\n";
                 return 1;
             }
+        } else if (arg == "--world" && i + 1 < argc) {
+            const std::string_view world = argv[++i];
+            if (world == "earth") {
+                options.world = orbis::World::Earth;
+            } else if (world == "procedural") {
+                options.world = orbis::World::Procedural;
+            } else {
+                std::cerr << "Invalid --world, expected earth or procedural\n";
+                return 1;
+            }
+        } else if (arg == "--elevation" && i + 1 < argc) {
+            options.elevationFile = argv[++i];
         } else if (arg == "--lod-colors") {
             options.showLodLevels = true;
         } else if (arg == "--help" || arg == "-h") {

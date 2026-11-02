@@ -15,28 +15,49 @@ out vec4 fragColor;
 // All colours are LINEAR. Lighting maths is only correct in linear space; we convert to sRGB
 // (the monitor's encoding) once, at the very end.
 const vec3 kDeepWater    = vec3(0.004, 0.018, 0.070);
-const vec3 kShallowWater = vec3(0.010, 0.080, 0.150);
+const vec3 kShallowWater = vec3(0.012, 0.090, 0.160);
 const vec3 kSand         = vec3(0.420, 0.370, 0.250);
 const vec3 kGrass        = vec3(0.055, 0.140, 0.030);
 const vec3 kForest       = vec3(0.025, 0.065, 0.018);
+const vec3 kTaiga        = vec3(0.022, 0.045, 0.025);
+const vec3 kDry          = vec3(0.330, 0.240, 0.130);
+const vec3 kTundra       = vec3(0.150, 0.135, 0.100);
 const vec3 kMeadow       = vec3(0.110, 0.130, 0.050);
 const vec3 kRock         = vec3(0.110, 0.095, 0.080);
 const vec3 kSnow         = vec3(0.850, 0.870, 0.900);
 
+// Land cover is a STYLISATION driven by elevation, slope and latitude (no land-cover data yet):
+// arid subtropical belts, temperate forest, taiga, tundra, then rock and snow with height.
 vec3 terrainAlbedo(float h, float slope, float absLatitudeSin) {
     if (h < 0.0) {
-        return mix(kDeepWater, kShallowWater, smoothstep(-4000.0, 0.0, h));
+        // Continental shelves (shallow) read clearly lighter than the deep ocean.
+        return mix(kDeepWater, kShallowWater, smoothstep(-2500.0, 0.0, h));
     }
-    vec3 c = mix(kSand, kGrass, smoothstep(0.0, 120.0, h));
-    c = mix(c, kForest, smoothstep(300.0, 1200.0, h));
-    c = mix(c, kMeadow, smoothstep(1900.0, 2600.0, h)); // tree line
-    c = mix(c, kRock, smoothstep(2700.0, 3500.0, h));
-    c = mix(c, kRock, smoothstep(0.22, 0.42, slope));   // steep => bare rock at any height
-    // Snow line drops from ~4.8 km at the equator to sea level near the poles,
-    // and snow does not stick to cliffs.
-    float snowLine = mix(4800.0, -200.0, smoothstep(0.75, 0.97, absLatitudeSin));
-    snowLine += 1800.0 * slope;
-    return mix(c, kSnow, smoothstep(snowLine, snowLine + 400.0, h));
+    float latitude = degrees(asin(absLatitudeSin));
+    float arid = smoothstep(12.0, 19.0, latitude) * (1.0 - smoothstep(31.0, 38.0, latitude));
+    float boreal = smoothstep(52.0, 60.0, latitude);
+    float tundra = smoothstep(63.0, 70.0, latitude);
+
+    vec3 lowland = mix(kGrass, kForest, smoothstep(150.0, 900.0, h));
+    lowland = mix(lowland, kTaiga, boreal);
+    lowland = mix(lowland, kDry, arid * 0.85);
+    lowland = mix(lowland, kTundra, tundra);
+
+    // Summer snow line by latitude, fitted to real reference points: ~5 km in the tropics,
+    // ~3.3 km in the Alps (46 deg), ~2.9 km in the Tatras (49), ~1.4 km in Scandinavia (60),
+    // sea level beyond ~75 deg. The tree line and the rock line follow it, as in nature:
+    // forest ends ~1.3 km below the snow, bare rock starts ~0.7 km below it.
+    float snowLine = 5000.0 - 5200.0 * smoothstep(25.0, 80.0, latitude);
+    float treeLine = snowLine - 1300.0;
+    float rockLine = snowLine - 700.0;
+
+    vec3 c = mix(kSand, lowland, smoothstep(0.0, 8.0, h)); // a thin beach, not sandy lowlands
+    c = mix(c, kMeadow, smoothstep(treeLine - 250.0, treeLine + 150.0, h) * (1.0 - arid));
+    c = mix(c, kRock, smoothstep(rockLine - 200.0, rockLine + 300.0, h));
+    c = mix(c, kRock, smoothstep(0.22, 0.42, slope)); // steep => bare rock at any height
+
+    snowLine += 1800.0 * slope; // snow does not stick to cliffs
+    return mix(c, kSnow, smoothstep(snowLine, snowLine + 350.0, h));
 }
 
 void main() {

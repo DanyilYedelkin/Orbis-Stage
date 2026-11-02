@@ -4,6 +4,7 @@ add_executable(orbis
     Window.cpp
     Terrain.cpp
     Sky.cpp
+    DataFiles.cpp
     gl/ShaderProgram.cpp
     gl/RenderTarget.cpp
     gl/DebugOutput.cpp)
@@ -17,7 +18,17 @@ orbis_embed_shaders(orbis
 
 target_link_libraries(orbis PRIVATE orbis::core glad glfw)
 # GLFW must not pull in its own GL header: glad provides the declarations.
-target_compile_definitions(orbis PRIVATE GLFW_INCLUDE_NONE)
+target_compile_definitions(orbis PRIVATE
+    GLFW_INCLUDE_NONE
+    ORBIS_SOURCE_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+
+# Ship the data next to the executable, so the built program also works when copied elsewhere.
+add_custom_command(TARGET orbis POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:orbis>/data"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${PROJECT_SOURCE_DIR}/data/earth_etopo10.oeg" "$<TARGET_FILE_DIR:orbis>/data/"
+    COMMENT "Copying Earth elevation data"
+    VERBATIM)
 orbis_configure_target(orbis)
 
 if(MSVC)

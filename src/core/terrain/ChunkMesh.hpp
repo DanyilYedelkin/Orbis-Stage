@@ -3,7 +3,7 @@
 #include "core/geo/Ellipsoid.hpp"
 #include "core/math/Vec3.hpp"
 #include "core/terrain/CubeSphere.hpp"
-#include "core/terrain/HeightField.hpp"
+#include "core/terrain/ElevationSource.hpp"
 
 #include <cstdint>
 #include <type_traits>
@@ -52,7 +52,7 @@ double chunkVertexSpacing(const FaceRegion& region, int quadsPerEdge, const Elli
 double chunkSkirtDepth(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid);
 
 ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid,
-                         const HeightField& heightField);
+                         const ElevationSource& terrain);
 
 /// Triangle indices for grid + skirt. Identical for every chunk with the same resolution, so one
 /// index buffer is shared by all chunks on the GPU. 16-bit indices halve its size.

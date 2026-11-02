@@ -1,19 +1,51 @@
 # Orbis — planet-scale terrain renderer
 
 A whole-planet terrain renderer in modern C++20 and OpenGL 4.5, built around the problems real
-geospatial and military simulators have to solve: **planetary coordinate precision, WGS84 geodesy,
-continuous level of detail from orbit to the ground, culling at planetary scale, and streaming
-terrain generation on worker threads.**
+geospatial and military simulators have to solve: **real Earth elevation data on a WGS84 ellipsoid,
+planetary coordinate precision, continuous level of detail from orbit to the ground, culling at
+planetary scale, and streaming terrain generation on worker threads.**
 
-![Mountains from 6.5 km](docs/mountains.png)
+![Earth from orbit](docs/earth-orbit.png)
 
-| Quadtree LOD levels (debug view, F3) | Orbit |
+| The Alpine arc from 70 km (real data + synthetic detail) | High Tatras from the south |
 |---|---|
-| ![LOD levels](docs/lod-levels.png) | ![Orbit](docs/orbit.png) |
+| ![Alps](docs/alps.png) | ![Tatras](docs/tatras.png) |
+
+| Procedural planet (`--world procedural`) | Quadtree LOD levels (debug view, F3) |
+|---|---|
+| ![Procedural](docs/procedural.png) | ![LOD levels](docs/lod-levels.png) |
 
 *All frames rendered headless in CI with Mesa's software OpenGL (llvmpipe).*
 
 ## Highlights
+
+### Real Earth
+
+**Measured elevation.** NOAA ETOPO1 (ice surface, 10 arc-minutes ≈ 18 km), converted by
+`tools/prepare_etopo.py` into a 4.7 MB grid that ships with the repository. The converter verifies
+the source by SHA-256 and recovers the grid layout from the point coordinates instead of assuming
+it — the source turned out to start at Greenwich, not at −180°, which a check against known
+places (Everest, Mariana Trench, Košice, the Netherlands' polders below sea level) caught.
+
+**Sampling done properly.** Bicubic (Catmull-Rom) interpolation, because bilinear is only C0 and
+every grid line would show as a lighting crease below the data resolution. A low-passed mip
+pyramid so coarse LOD levels read pre-filtered data instead of aliasing. Rows beyond a pole
+continue on the opposite meridian and longitude wraps, so the poles and the date line are not edges.
+
+**Synthetic detail below the data resolution** — the standard simulator approach of "measured base,
+plausible detail". The detail starts exactly at the data's Nyquist limit, and its strength comes
+from a precomputed *relief map* (how much the data deviates from its own smoothed version): ~5 m on
+plains, ~300 m in the Tatras, ~700 m in the Alps. Absolute height would be a poor guide — the
+Tibetan plateau is high but flat. Where the data says land, detail may not create sea (otherwise
+every lowland fills with puddles); the other way round gives natural fractal coastlines.
+
+**One interface, two worlds.** Quadtree, mesh builder and worker threads only see
+`ElevationSource`; `--world earth|procedural` switches between ETOPO and the procedural planet.
+
+*Honest limits:* 18 km data shows real mountain ranges from altitude, but foothills rather than
+peaks from the ground — that needs higher-resolution tiles (see roadmap). Land cover is a
+latitude/elevation stylisation (arid subtropical belts, temperate forest, taiga, tundra, tree, rock
+and snow lines fitted to real references), so e.g. monsoon Nepal comes out arid.
 
 ### Level of detail
 
@@ -69,7 +101,7 @@ from −11 km to 10 000 km altitude), ENU frames, terrain displaced along the ge
 ### Terrain
 
 **Spherified cube** (cell areas within 4/3 of each other instead of 5.2× for naive normalisation;
-face edges bit-identical, tested). **Procedural, band-limited relief**: continents, ridged-multifractal
+face edges bit-identical, tested). **Procedural planet**: band-limited continents, ridged-multifractal
 mountain ranges and fractal detail down to ~1 m, sampled on the unit sphere (no pole stretching, no
 date-line seam). Octaves finer than a chunk can represent are faded out (Nyquist), so coarse levels
 do not alias, and the normalisation keeps the large-scale shape identical across levels.
@@ -85,7 +117,8 @@ ground-level views get real aerial perspective; ACES filmic tone mapping; sun di
 ### Engineering
 
 - `orbis_core` has no OpenGL or windowing dependency: math, geodesy, terrain, LOD and the thread
-  pool are all unit-tested — **54 Catch2 tests**, 365 000 assertions.
+  pool are all unit-tested — **66 Catch2 tests**, ~459 000 assertions, including checks against
+  known geography.
 - CI: Windows (MSVC) + Linux (GCC), Debug + Release, warnings as errors
   (`/W4`, `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wdouble-promotion ...`),
   **AddressSanitizer + UBSan**, **ThreadSanitizer**, and a headless render job that uploads frames.
@@ -120,7 +153,8 @@ startup item, and press F5. On Linux install the X11 headers first:
 ## Running
 
 ```
-orbis [--size WxH] [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation]
+orbis [--world earth|procedural] [--elevation file.oeg] [--size WxH]
+      [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation]
       [--lod-colors] [--screenshot file.ppm]
 ```
 
@@ -138,7 +172,17 @@ orbis [--size WxH] [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation
 | Esc | Quit |
 
 The window title shows FPS, altitude, position, chunks and triangles drawn, deepest level and the
-build queue. A nice place to start: `orbis --view 0.30,-140.75,6.5,45,-10`.
+build queue. Places to start:
+
+```
+orbis                                                   # Europe from orbit, above Kosice
+orbis --view 44.3,8.6,70,5,-22 --sun 235,25             # the Alps from 70 km
+orbis --view 48.95,20.10,2.6,8,-3 --sun 250,16          # the High Tatras
+orbis --world procedural --view 0.30,-140.75,6.5,45,-10 # procedural mountains
+```
+
+The Earth data is looked up next to the executable (`data/`, copied there by the build) and then
+in the source tree; `--elevation` points to another `.oeg` file.
 
 ## Project layout
 
@@ -146,10 +190,13 @@ build queue. A nice place to start: `orbis --view 0.30,-140.75,6.5,45,-10`.
 src/core/      engine core, no GPU dependency
   math/        Vec3, Mat4 (reversed-Z projection), Frustum
   geo/         WGS84 ellipsoid, geodetic <-> ECEF, ENU frames, horizon culling
-  terrain/     cube-sphere, noise, height field, chunk meshes + skirts, quadtree LOD, thread pool
+  terrain/     cube-sphere, noise, elevation sources (ETOPO grid, procedural), chunk meshes +
+               skirts, quadtree LOD, thread pool
   scene/       ENU flight camera
 src/app/       window, terrain streaming + GPU cache, sky, OpenGL wrappers, application loop
 shaders/       GLSL, embedded into the executable at build time
+data/          earth_etopo10.oeg - ETOPO1 elevation grid (generated by tools/prepare_etopo.py)
+tools/         data preparation scripts
 tests/         Catch2 unit tests
 ```
 
@@ -158,12 +205,17 @@ tests/         Catch2 unit tests
 - [x] **Foundation:** WGS84, cube-sphere, camera-relative rendering, reversed-Z, tests, CI.
 - [x] **LOD and streaming:** quadtree with screen-space error, frustum + ellipsoid horizon culling,
       skirts, worker-thread generation with a re-prioritised queue, GPU cache with eviction.
-- [ ] **Real Earth:** global elevation data (ETOPO / GEBCO) with procedural detail on top.
+- [x] **Real Earth:** ETOPO1 elevation, bicubic + mip-filtered sampling, relief-driven synthetic
+      detail, `ElevationSource` interface.
+- [ ] **High-resolution tiles:** stream regional DEM tiles (ETOPO 2022 1′, SRTM) on demand.
+- [ ] **Land cover data** instead of the latitude stylisation.
 - [ ] **Smooth transitions:** geomorphing between LOD levels; ImGui debug panel; physically based
       atmospheric scattering.
 
 ## References
 
+- NOAA NCEI — *ETOPO1 1 Arc-Minute Global Relief Model* (doi:10.7289/V5C8276M), public domain;
+  10′ resampling from the PyVista example-data repository.
 - NIMA TR8350.2 — *Department of Defense World Geodetic System 1984*.
 - P. Cozzi, K. Ring — *3D Engine Design for Virtual Globes* (2011).
 - T. Ulrich — *Rendering Massive Terrains using Chunked Level of Detail Control* (SIGGRAPH 2002).

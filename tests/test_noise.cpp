@@ -83,3 +83,25 @@ TEST_CASE("band limiting keeps the low frequencies identical", "[noise]") {
     const double firstOctaveOnly = fbm(n, p, one) * 1.0 / (1.0 + 0.5 + 0.25 + 0.125 + 0.0625 + 0.03125);
     CHECK_THAT(fbm(n, p, six, 2.0), WithinAbs(firstOctaveOnly, 1e-12));
 }
+
+TEST_CASE("soft crests remove the slope discontinuity of ridged noise", "[noise]") {
+    // Walk across many zero lines of the noise; measure the largest jump in slope.
+    const PerlinNoise n(12);
+    const auto maxSlopeJump = [&](double softness) {
+        const FbmParams params{.octaves = 1, .crestSoftness = softness};
+        double worst = 0.0;
+        constexpr double h = 1e-3;
+        for (int i = 1; i < 20000; ++i) {
+            const Vec3d p{i * h, 0.37, -1.21};
+            const double a = ridgedFbm(n, p - Vec3d{h, 0, 0}, params);
+            const double b = ridgedFbm(n, p, params);
+            const double c = ridgedFbm(n, p + Vec3d{h, 0, 0}, params);
+            worst = std::max(worst, std::abs((c - b) - (b - a)) / h);
+        }
+        return worst;
+    };
+    const double sharp = maxSlopeJump(0.0);
+    const double soft = maxSlopeJump(0.15);
+    CHECK(sharp > 1.0);         // a kink: the slope jumps by O(1) across a crest
+    CHECK(soft < sharp * 0.05); // rounded: the slope changes smoothly
+}

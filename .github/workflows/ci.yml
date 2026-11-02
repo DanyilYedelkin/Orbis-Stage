@@ -75,9 +75,11 @@ jobs:
           cmake --build build
       - name: Render frames
         run: |
-          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --screenshot orbit.ppm
-          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --view 0.30,-140.75,6.5,45,-10 --screenshot mountains.ppm
-          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --view 0.30,-140.75,6.5,45,-10 --lod-colors --screenshot lod-levels.ppm
+          RUN='xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720'
+          eval $RUN --screenshot earth-orbit.ppm
+          eval $RUN --view 44.3,8.6,70,5,-22 --sun 235,25 --screenshot alps.ppm
+          eval $RUN --world procedural --view 0.30,-140.75,6.5,45,-10 --screenshot procedural.ppm
+          eval $RUN --world procedural --view 0.30,-140.75,6.5,45,-10 --lod-colors --screenshot lod-levels.ppm
       - uses: actions/upload-artifact@v4
         with:
           name: frames

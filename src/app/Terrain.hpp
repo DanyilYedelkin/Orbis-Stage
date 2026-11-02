@@ -5,7 +5,7 @@
 #include "core/geo/Ellipsoid.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/terrain/ChunkBuilder.hpp"
-#include "core/terrain/HeightField.hpp"
+#include "core/terrain/ElevationSource.hpp"
 #include "core/terrain/Quadtree.hpp"
 
 #include <cstddef>
@@ -42,7 +42,7 @@ struct TerrainStats {
 ///   4. evict chunks nobody has used for a while (bounded GPU memory)
 class Terrain {
 public:
-    Terrain(const Ellipsoid& ellipsoid, const HeightField& heightField,
+    Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
             const LodSettings& settings);
 
     /// `lodCamera` drives selection; normally the real camera, a frozen copy when debugging.

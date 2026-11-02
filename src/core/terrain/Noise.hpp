@@ -28,6 +28,10 @@ struct FbmParams {
     int octaves = 6;
     double lacunarity = 2.0; ///< Frequency multiplier per octave.
     double gain = 0.5;       ///< Amplitude multiplier per octave.
+    /// ridgedFbm only: rounds the crests. 0 = razor-sharp (a slope discontinuity along every
+    /// zero line of the noise); ~0.1-0.2 = rounded over that fraction of each octave's
+    /// wavelength, i.e. equally soft at every scale. Also smooths the octave weighting.
+    double crestSoftness = 0.0;
 };
 
 /// Fractional Brownian motion: a sum of noise octaves, each finer and weaker. Normalised by the

@@ -1,7 +1,10 @@
 #include "app/Application.hpp"
 
+#include "app/DataFiles.hpp"
 #include "app/gl/DebugOutput.hpp"
 #include "core/terrain/CubeSphere.hpp"
+#include "core/terrain/EarthTerrain.hpp"
+#include "core/terrain/HeightField.hpp"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -9,7 +12,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <memory>
+#include <optional>
 #include <fstream>
 #include <thread>
 #include <iostream>
@@ -37,11 +44,43 @@ WindowConfig makeWindowConfig(const AppOptions& options) {
     return config;
 }
 
+constexpr std::uint64_t kTerrainSeed = 20261102;
+constexpr const char* kEarthDataFile = "earth_etopo10.oeg";
+
+std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& options,
+                                                           const Ellipsoid& ellipsoid) {
+    if (options.world == World::Earth) {
+        const std::optional<std::filesystem::path> path =
+            options.elevationFile ? std::optional(std::filesystem::path(*options.elevationFile))
+                                  : findDataFile(kEarthDataFile);
+        if (path) {
+            try {
+                const auto start = std::chrono::steady_clock::now();
+                auto earth = std::make_unique<EarthTerrain>(ElevationGrid::load(*path), ellipsoid,
+                                                            kTerrainSeed);
+                const auto ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - start);
+                std::cout << "Earth elevation: " << path->string() << " ("
+                          << static_cast<long long>(ms.count()) << " ms)\n";
+                return earth;
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: " << e.what() << '\n';
+            }
+        } else {
+            std::cerr << "Warning: " << kEarthDataFile << " not found (run tools/prepare_etopo.py "
+                      << "or pass --elevation).\n";
+        }
+        std::cerr << "Falling back to the procedural planet.\n";
+    }
+    return std::make_unique<HeightField>(kTerrainSeed);
+}
+
 } // namespace
 
 Application::Application(const AppOptions& options)
     : options_(options), window_(makeWindowConfig(options)),
-      terrain_(ellipsoid_, heightField_, LodSettings{}) {
+      elevation_(makeElevationSource(options, ellipsoid_)),
+      terrain_(ellipsoid_, *elevation_, LodSettings{}) {
     gl::enableDebugOutput();
 
     std::cout << "OpenGL " << glGetString(GL_VERSION) << " | " << glGetString(GL_RENDERER) << '\n';

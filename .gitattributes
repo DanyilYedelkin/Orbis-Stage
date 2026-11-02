@@ -1,0 +1,3 @@
+# Binary data: never touch line endings, never try to diff or merge.
+*.oeg binary
+*.png binary

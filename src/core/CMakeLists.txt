@@ -7,6 +7,8 @@ add_library(orbis_core STATIC
     terrain/CubeSphere.cpp
     terrain/Noise.cpp
     terrain/HeightField.cpp
+    terrain/ElevationGrid.cpp
+    terrain/EarthTerrain.cpp
     terrain/ChunkMesh.cpp
     terrain/Quadtree.cpp
     terrain/ChunkBuilder.cpp

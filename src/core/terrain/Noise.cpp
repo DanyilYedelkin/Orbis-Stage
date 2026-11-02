@@ -122,9 +122,21 @@ double ridgedFbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& para
             }
             break;
         }
-        double signal = 1.0 - std::abs(noise.sample(p * frequency));
+        // |n| with a rounded tip: sqrt(n^2 + e^2) - e equals |n| away from zero but is smooth
+        // at zero, so the crest has no kink. Clamped so the result stays in [0, 1].
+        const double n = noise.sample(p * frequency);
+        const double e = params.crestSoftness;
+        const double absN = e > 0.0 ? std::sqrt(n * n + e * e) - e : std::abs(n);
+        double signal = std::clamp(1.0 - absN, 0.0, 1.0);
         signal *= signal * weight;
-        weight = std::clamp(signal * 2.0, 0.0, 1.0);
+        // Musgrave's weight clamp(2s, 0, 1) has a kink where it saturates - another family of
+        // closed lines in the shading. In soft mode use smoothstep(0, 0.5, s): same shape, C1.
+        if (e > 0.0) {
+            const double t = std::clamp(signal * 2.0, 0.0, 1.0);
+            weight = t * t * (3.0 - 2.0 * t);
+        } else {
+            weight = std::clamp(signal * 2.0, 0.0, 1.0);
+        }
 
         sum += fade * amplitude * signal;
         totalAmplitude += amplitude;

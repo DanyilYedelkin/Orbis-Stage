@@ -28,8 +28,8 @@ struct SurfaceSample {
 ///   2. push it out along the ellipsoid normal  -> geodetic "up", same as a real altimeter
 /// Oceans are flat: geometry uses max(elevation, 0); the raw value is kept for colouring.
 SurfaceSample sampleSurface(const Vec3d& unitDir, double spacing, const Ellipsoid& ellipsoid,
-                            const HeightField& heightField) {
-    const double elevation = heightField.elevation(unitDir, spacing);
+                            const ElevationSource& terrain) {
+    const double elevation = terrain.elevation(unitDir, spacing);
     const Vec3d seaLevel = ellipsoid.surfacePointAlong(unitDir);
     const Vec3d up = ellipsoid.surfaceNormal(seaLevel);
     return {seaLevel + up * std::max(elevation, 0.0), up, elevation};
@@ -42,7 +42,7 @@ SurfaceSample sampleSurface(const Vec3d& unitDir, double spacing, const Ellipsoi
 /// lighting would show a visible seam. Here the normal depends only on the direction itself, so
 /// two chunks sharing a border vertex compute bit-identical normals.
 Vec3d surfaceNormalAt(const Vec3d& unitDir, double angularStep, double spacing,
-                      const Ellipsoid& ellipsoid, const HeightField& heightField) {
+                      const Ellipsoid& ellipsoid, const ElevationSource& terrain) {
     // Any tangent basis works; it is derived from unitDir alone so it is deterministic.
     // cross(t1, t2) == unitDir, so the result points outwards.
     const Vec3d helper = std::abs(unitDir.z) < 0.9 ? Vec3d{0, 0, 1} : Vec3d{1, 0, 0};
@@ -50,7 +50,7 @@ Vec3d surfaceNormalAt(const Vec3d& unitDir, double angularStep, double spacing,
     const Vec3d t2 = cross(unitDir, t1);
 
     const auto at = [&](const Vec3d& offset) {
-        return sampleSurface(normalize(unitDir + offset), spacing, ellipsoid, heightField).position;
+        return sampleSurface(normalize(unitDir + offset), spacing, ellipsoid, terrain).position;
     };
     const Vec3d d1 = at(t1 * angularStep) - at(t1 * -angularStep);
     const Vec3d d2 = at(t2 * angularStep) - at(t2 * -angularStep);
@@ -70,7 +70,7 @@ double chunkSkirtDepth(const FaceRegion& region, int quadsPerEdge, const Ellipso
     // covers slopes up to 45 degrees at fine levels; at coarse levels the cell size is huge, so
     // cap it at the maximum terrain height plus the sag of a root cell (~2 km).
     const double spacing = chunkVertexSpacing(region, quadsPerEdge, ellipsoid);
-    return std::min(spacing, HeightField::maxElevation() + 3000.0);
+    return std::min(spacing, kMaxTerrainElevation + 3000.0);
 }
 
 int boundaryGridIndex(int k, int n) {
@@ -88,7 +88,7 @@ int boundaryGridIndex(int k, int n) {
 }
 
 ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid,
-                         const HeightField& heightField) {
+                         const ElevationSource& terrain) {
     validate(quadsPerEdge);
 
     const int n = quadsPerEdge;
@@ -121,8 +121,8 @@ ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellip
             const double u = (i == n) ? region.uMin + region.size : region.uMin + i * step;
 
             const Vec3d dir = faceToSphere(region.face, u, v);
-            const SurfaceSample s = sampleSurface(dir, spacing, ellipsoid, heightField);
-            const Vec3d normal = surfaceNormalAt(dir, angularStep, spacing, ellipsoid, heightField);
+            const SurfaceSample s = sampleSurface(dir, spacing, ellipsoid, terrain);
+            const Vec3d normal = surfaceNormalAt(dir, angularStep, spacing, ellipsoid, terrain);
 
             const Vec3d local = s.position - mesh.origin; // subtract in DOUBLE, then narrow
             maxDistanceSq = std::max(maxDistanceSq, lengthSquared(local));
