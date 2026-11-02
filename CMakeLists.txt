@@ -23,6 +23,10 @@ option(ORBIS_BUILD_APP          "Build the interactive renderer (needs a GPU / O
 option(ORBIS_BUILD_TESTS        "Build unit tests"                                          ON)
 option(ORBIS_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"                          OFF)
 option(ORBIS_SANITIZERS         "Enable AddressSanitizer + UBSan (GCC/Clang only)"           OFF)
+option(ORBIS_TSAN               "Enable ThreadSanitizer (GCC/Clang only, not with ASan)"     OFF)
+if(ORBIS_SANITIZERS AND ORBIS_TSAN)
+    message(FATAL_ERROR "ASan and TSan cannot be combined; enable one at a time")
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(ProjectOptions)

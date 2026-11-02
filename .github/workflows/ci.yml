@@ -44,6 +44,19 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
+  thread-sanitizer:
+    # The chunk builder is multi-threaded; TSan detects data races that tests alone would miss.
+    name: TSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (core + tests only)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DORBIS_TSAN=ON -DORBIS_BUILD_APP=OFF -DORBIS_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
   render-smoke-test:
     # Renders real frames on a GPU-less runner (Xvfb + Mesa llvmpipe software OpenGL 4.5).
     # Catches shader compile errors and GL setup bugs that unit tests cannot see.
@@ -63,7 +76,8 @@ jobs:
       - name: Render frames
         run: |
           xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --screenshot orbit.ppm
-          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --view 40,10,1500,20,-25 --screenshot oblique.ppm
+          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --view 0.30,-140.75,6.5,45,-10 --screenshot mountains.ppm
+          xvfb-run -a -s "-screen 0 1600x900x24" ./build/src/app/orbis --size 1280x720 --view 0.30,-140.75,6.5,45,-10 --lod-colors --screenshot lod-levels.ppm
       - uses: actions/upload-artifact@v4
         with:
           name: frames

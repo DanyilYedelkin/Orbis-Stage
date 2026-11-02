@@ -57,3 +57,29 @@ TEST_CASE("height field produces both oceans and mountains", "[noise][terrain]")
     CHECK(highest < 12000.0);
     CHECK(lowest < -2000.0);
 }
+
+TEST_CASE("ridged multifractal stays in [0, 1] and respects the band limit", "[noise]") {
+    const PerlinNoise n(5);
+    std::mt19937_64 rng(2);
+    std::uniform_real_distribution<double> coord(-100.0, 100.0);
+    for (int i = 0; i < 20000; ++i) {
+        const Vec3d p{coord(rng), coord(rng), coord(rng)};
+        const double full = ridgedFbm(n, p, {.octaves = 8});
+        REQUIRE(full >= 0.0);
+        REQUIRE(full <= 1.0);
+        // With every octave filtered out (limit below the first octave), nothing remains.
+        REQUIRE(ridgedFbm(n, p, {.octaves = 8}, 0.5) == 0.0);
+    }
+}
+
+TEST_CASE("band limiting keeps the low frequencies identical", "[noise]") {
+    // Coarse and fine LOD levels must agree on the overall shape, or terrain would "breathe"
+    // when switching levels: removing high octaves may not rescale the remaining ones.
+    // Limit 2.0: octave 1 (frequency 1) gets full weight, octave 2 (frequency 2) is faded out.
+    const PerlinNoise n(8);
+    const Vec3d p{1.3, 2.7, -0.4};
+    const FbmParams one{.octaves = 1};
+    const FbmParams six{.octaves = 6};
+    const double firstOctaveOnly = fbm(n, p, one) * 1.0 / (1.0 + 0.5 + 0.25 + 0.125 + 0.0625 + 0.03125);
+    CHECK_THAT(fbm(n, p, six, 2.0), WithinAbs(firstOctaveOnly, 1e-12));
+}

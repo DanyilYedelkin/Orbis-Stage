@@ -5,7 +5,10 @@ add_executable(orbis_tests
     test_cube_sphere.cpp
     test_noise.cpp
     test_chunk_mesh.cpp
-    test_camera.cpp)
+    test_camera.cpp
+    test_lod.cpp
+    test_culling.cpp
+    test_chunk_builder.cpp)
 
 target_link_libraries(orbis_tests PRIVATE orbis::core Catch2::Catch2WithMain)
 orbis_configure_target(orbis_tests)

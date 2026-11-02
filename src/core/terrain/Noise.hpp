@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 
 namespace orbis {
 
@@ -31,6 +32,19 @@ struct FbmParams {
 
 /// Fractional Brownian motion: a sum of noise octaves, each finer and weaker. Normalised by the
 /// total amplitude so the output stays roughly in [-1, 1] for any octave count.
-double fbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params);
+///
+/// `maxFrequency` band-limits the sum (anti-aliasing): octaves above it are faded out, so a coarse
+/// LOD level does not sample detail it cannot represent (which would shimmer and pop). The
+/// normalisation always uses ALL octaves, so the low frequencies - the overall shape - are
+/// identical at every level of detail.
+double fbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
+           double maxFrequency = std::numeric_limits<double>::infinity());
+
+/// Ridged multifractal (F. K. Musgrave): mountain ranges with sharp crests and smooth valleys.
+/// Each octave is (1 - |noise|)^2 - a crest where smooth noise crosses zero - and is weighted by
+/// the previous octave's signal, so detail piles up on ridges and stays out of valley floors.
+/// Output in [0, 1]. Band-limited and normalised like fbm().
+double ridgedFbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
+                 double maxFrequency = std::numeric_limits<double>::infinity());
 
 } // namespace orbis

@@ -11,8 +11,9 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
-#include <future>
+#include <thread>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <stdexcept>
 #include <vector>
@@ -21,9 +22,8 @@ namespace orbis {
 
 namespace {
 
-constexpr int kChunksPerFaceEdge = 8; // 8 x 8 x 6 = 384 chunks
-constexpr int kQuadsPerChunkEdge = 32;
 constexpr double kDegToRad = std::numbers::pi / 180.0;
+constexpr std::size_t kUploadsPerFrame = 24; // bounds GPU upload work per frame (no hitches)
 
 WindowConfig makeWindowConfig(const AppOptions& options) {
     WindowConfig config;
@@ -40,7 +40,8 @@ WindowConfig makeWindowConfig(const AppOptions& options) {
 } // namespace
 
 Application::Application(const AppOptions& options)
-    : options_(options), window_(makeWindowConfig(options)), terrain_(kQuadsPerChunkEdge) {
+    : options_(options), window_(makeWindowConfig(options)),
+      terrain_(ellipsoid_, heightField_, LodSettings{}) {
     gl::enableDebugOutput();
 
     std::cout << "OpenGL " << glGetString(GL_VERSION) << " | " << glGetString(GL_RENDERER) << '\n';
@@ -56,51 +57,41 @@ Application::Application(const AppOptions& options)
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
 
-    buildPlanet();
+    drawSettings_.showLodLevels = options.showLodLevels;
 
     const AppOptions::View& v = options_.view;
     camera_.setPosition({v.latitude * kDegToRad, v.longitude * kDegToRad, v.altitudeKm * 1000.0});
     camera_.setOrientation(v.heading * kDegToRad, v.pitch * kDegToRad);
 
-    // Afternoon sun from the south-west of Central Europe.
-    const EnuFrame enu = Ellipsoid::enuFrame(48.7 * kDegToRad, 21.3 * kDegToRad);
-    drawSettings_.sunDirection = normalize(enu.up * 0.8 - enu.east * 0.7 - enu.north * 0.4);
-}
-
-void Application::buildPlanet() {
-    const auto start = std::chrono::steady_clock::now();
-
-    // One task per cube face. The generator is pure (no shared mutable state), so this is safe
-    // without locks. Stage 3 replaces it with a real job system and streaming.
-    std::vector<std::future<std::vector<ChunkMesh>>> tasks;
-    for (const CubeFace face : kAllCubeFaces) {
-        tasks.push_back(std::async(std::launch::async, [this, face] {
-            std::vector<ChunkMesh> meshes;
-            const double size = 2.0 / kChunksPerFaceEdge;
-            for (int j = 0; j < kChunksPerFaceEdge; ++j) {
-                for (int i = 0; i < kChunksPerFaceEdge; ++i) {
-                    const FaceRegion region{face, -1.0 + i * size, -1.0 + j * size, size};
-                    meshes.push_back(
-                        buildChunkMesh(region, kQuadsPerChunkEdge, ellipsoid_, heightField_));
-                }
-            }
-            return meshes;
-        }));
-    }
-
-    // GL calls stay on the main thread: an OpenGL context belongs to one thread.
-    for (auto& task : tasks) {
-        terrain_.upload(task.get());
-    }
-
-    const auto ms =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start);
-    std::cout << "Planet: " << terrain_.chunkCount() << " chunks, " << terrain_.triangleCount()
-              << " triangles, built in " << static_cast<long long>(ms.count()) << " ms\n";
+    // Sun defined in the local frame of the starting point, so every --view starts in daylight.
+    const EnuFrame enu = Ellipsoid::enuFrame(v.latitude * kDegToRad, v.longitude * kDegToRad);
+    const double az = options.sunAzimuth * kDegToRad;
+    const double el = options.sunElevation * kDegToRad;
+    drawSettings_.sunDirection =
+        normalize((enu.north * std::cos(az) + enu.east * std::sin(az)) * std::cos(el) +
+                  enu.up * std::sin(el));
 }
 
 int Application::run() {
     if (options_.screenshotPath) {
+        // Let the LOD stream in until the image is final (or give up after a minute), so CI
+        // screenshots are deterministic rather than "whatever had loaded so far".
+        const auto start = std::chrono::steady_clock::now();
+        int iterations = 0;
+        do {
+            updateTerrain(std::numeric_limits<std::size_t>::max());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            ++iterations;
+        } while (!terrain_.settled() &&
+                 std::chrono::steady_clock::now() - start < std::chrono::seconds(60));
+        const auto ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start);
+        const TerrainStats& st = terrain_.stats();
+        std::cout << "Settled in " << static_cast<long long>(ms.count()) << " ms, " << iterations
+                  << " updates: " << st.drawnChunks << " chunks drawn (" << st.drawnTriangles
+                  << " triangles), " << st.residentChunks << " resident, deepest level "
+                  << st.deepestLevel << ", culled " << st.frustumCulled << " frustum / "
+                  << st.horizonCulled << " horizon\n";
         renderFrame();
         saveScreenshot(*options_.screenshotPath);
         return 0;
@@ -116,6 +107,7 @@ int Application::run() {
         previous = now;
 
         handleInput(dt);
+        updateTerrain(kUploadsPerFrame);
         renderFrame();
         window_.swapBuffers();
         updateTitle(dt);
@@ -131,11 +123,27 @@ void Application::handleInput(double dt) {
         window_.requestClose();
     }
 
-    const bool wireframeDown = down(GLFW_KEY_F1);
-    if (wireframeDown && !wireframeKeyWasDown_) {
+    if (wireframeKey_.pressed(down(GLFW_KEY_F1))) {
         drawSettings_.wireframe = !drawSettings_.wireframe;
     }
-    wireframeKeyWasDown_ = wireframeDown;
+    if (freezeKey_.pressed(down(GLFW_KEY_F2))) {
+        if (frozenLodCamera_) {
+            frozenLodCamera_.reset();
+        } else {
+            frozenLodCamera_ = camera_;
+        }
+    }
+    if (lodColorKey_.pressed(down(GLFW_KEY_F3))) {
+        drawSettings_.showLodLevels = !drawSettings_.showLodLevels;
+    }
+    // [ = more detail, ] = less detail.
+    double& pixelError = terrain_.lodSettings().maxPixelError;
+    if (finerKey_.pressed(down(GLFW_KEY_LEFT_BRACKET))) {
+        pixelError = std::max(pixelError / 1.5, 0.5);
+    }
+    if (coarserKey_.pressed(down(GLFW_KEY_RIGHT_BRACKET))) {
+        pixelError = std::min(pixelError * 1.5, 64.0);
+    }
 
     // Mouse look while the right button is held.
     const bool rmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
@@ -183,6 +191,16 @@ void Application::handleInput(double dt) {
     }
 }
 
+void Application::updateTerrain(std::size_t maxUploads) {
+    int width = 0;
+    int height = 0;
+    window_.framebufferSize(width, height);
+    if (width == 0 || height == 0) {
+        return;
+    }
+    terrain_.update(frozenLodCamera_ ? *frozenLodCamera_ : camera_, width, height, maxUploads);
+}
+
 void Application::renderFrame() {
     int width = 0;
     int height = 0;
@@ -197,6 +215,7 @@ void Application::renderFrame() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    sky_.draw(camera_, aspect, drawSettings_.sunDirection);
     terrain_.draw(camera_, aspect, drawSettings_);
 
     renderTarget_.blitToWindow();
@@ -214,12 +233,18 @@ void Application::updateTitle(double dt) {
     const double latDeg = g.latitude / kDegToRad;
     const double lonDeg = g.longitude / kDegToRad;
 
-    char title[256];
+    const TerrainStats& st = terrain_.stats();
+
+    char title[384];
     std::snprintf(title, sizeof(title),
-                  "Orbis | %.0f fps | alt %.3f km | %.4f%c %.4f%c | speed x%.3f%s", fps,
-                  g.height / 1000.0, std::abs(latDeg), latDeg >= 0 ? 'N' : 'S', std::abs(lonDeg),
-                  lonDeg >= 0 ? 'E' : 'W', speedMultiplier_,
-                  drawSettings_.wireframe ? " | wireframe" : "");
+                  "Orbis | %.0f fps | alt %.3f km | %.4f%c %.4f%c | %zu chunks (%.2fM tris), "
+                  "lvl %d | queue %zu | err %.1fpx | speed x%.3f%s%s",
+                  fps, g.height / 1000.0, std::abs(latDeg), latDeg >= 0 ? 'N' : 'S',
+                  std::abs(lonDeg), lonDeg >= 0 ? 'E' : 'W', st.drawnChunks,
+                  static_cast<double>(st.drawnTriangles) / 1e6, st.deepestLevel,
+                  st.pendingBuilds + st.runningBuilds, terrain_.lodSettings().maxPixelError,
+                  speedMultiplier_, drawSettings_.wireframe ? " | wireframe" : "",
+                  frozenLodCamera_ ? " | LOD FROZEN" : "");
     window_.setTitle(title);
 
     titleTimer_ = 0.0;

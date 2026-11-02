@@ -21,6 +21,7 @@ public:
 
     void set(const char* name, int value) const;
     void set(const char* name, float value) const;
+    void set(const char* name, float x, float y) const;
     void set(const char* name, const Vec3f& value) const;
     void set(const char* name, const Mat4f& value) const;
 

@@ -18,16 +18,24 @@
       "displayName": "Debug + ASan/UBSan (GCC/Clang)",
       "binaryDir": "${sourceDir}/build/asan",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "ORBIS_SANITIZERS": "ON" }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Debug + ThreadSanitizer (GCC/Clang)",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "ORBIS_TSAN": "ON", "ORBIS_BUILD_APP": "OFF" }
     }
   ],
   "buildPresets": [
     { "name": "debug",   "configurePreset": "debug",   "configuration": "Debug" },
     { "name": "release", "configurePreset": "release", "configuration": "Release" },
-    { "name": "asan",    "configurePreset": "asan",    "configuration": "Debug" }
+    { "name": "asan",    "configurePreset": "asan",    "configuration": "Debug" },
+    { "name": "tsan",    "configurePreset": "tsan",    "configuration": "Debug" }
   ],
   "testPresets": [
     { "name": "debug",   "configurePreset": "debug",   "configuration": "Debug",   "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "configuration": "Release", "output": { "outputOnFailure": true } },
-    { "name": "asan",    "configurePreset": "asan",    "configuration": "Debug",   "output": { "outputOnFailure": true } }
+    { "name": "asan",    "configurePreset": "asan",    "configuration": "Debug",   "output": { "outputOnFailure": true } },
+    { "name": "tsan",    "configurePreset": "tsan",    "configuration": "Debug",   "output": { "outputOnFailure": true } }
   ]
 }

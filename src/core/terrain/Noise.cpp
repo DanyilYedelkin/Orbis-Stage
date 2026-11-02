@@ -1,5 +1,6 @@
 #include "core/terrain/Noise.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <numeric>
@@ -83,13 +84,49 @@ double PerlinNoise::sample(const Vec3d& pt) const {
                           grad(P(bb + 1), x - 1, y - 1, z - 1))));
 }
 
-double fbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params) {
+double fbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
+           double maxFrequency) {
     double sum = 0.0;
     double amplitude = 1.0;
     double frequency = 1.0;
     double totalAmplitude = 0.0;
     for (int i = 0; i < params.octaves; ++i) {
-        sum += amplitude * noise.sample(p * frequency);
+        // Full weight up to half the limit, linear fade to zero at the limit. A smooth fade
+        // (instead of a hard cut) means an octave appears gradually as you zoom in.
+        const double weight = std::clamp(2.0 - 2.0 * frequency / maxFrequency, 0.0, 1.0);
+        if (weight > 0.0) {
+            sum += weight * amplitude * noise.sample(p * frequency);
+        }
+        totalAmplitude += amplitude;
+        amplitude *= params.gain;
+        frequency *= params.lacunarity;
+    }
+    return totalAmplitude > 0.0 ? sum / totalAmplitude : 0.0;
+}
+
+double ridgedFbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
+                 double maxFrequency) {
+    double sum = 0.0;
+    double amplitude = 1.0;
+    double frequency = 1.0;
+    double totalAmplitude = 0.0;
+    double weight = 1.0;
+    for (int i = 0; i < params.octaves; ++i) {
+        const double fade = std::clamp(2.0 - 2.0 * frequency / maxFrequency, 0.0, 1.0);
+        if (fade <= 0.0) {
+            // Frequencies only grow, so every remaining octave is filtered out too. Still count
+            // their amplitude so the normalisation is identical at every level of detail.
+            for (; i < params.octaves; ++i) {
+                totalAmplitude += amplitude;
+                amplitude *= params.gain;
+            }
+            break;
+        }
+        double signal = 1.0 - std::abs(noise.sample(p * frequency));
+        signal *= signal * weight;
+        weight = std::clamp(signal * 2.0, 0.0, 1.0);
+
+        sum += fade * amplitude * signal;
         totalAmplitude += amplitude;
         amplitude *= params.gain;
         frequency *= params.lacunarity;

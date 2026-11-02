@@ -79,6 +79,9 @@ void ShaderProgram::set(const char* name, int value) const {
 void ShaderProgram::set(const char* name, float value) const {
     glProgramUniform1f(program_.get(), location(name), value);
 }
+void ShaderProgram::set(const char* name, float x, float y) const {
+    glProgramUniform2f(program_.get(), location(name), x, y);
+}
 void ShaderProgram::set(const char* name, const Vec3f& value) const {
     glProgramUniform3f(program_.get(), location(name), value.x, value.y, value.z);
 }

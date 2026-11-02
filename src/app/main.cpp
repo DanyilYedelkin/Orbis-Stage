@@ -8,10 +8,11 @@
 namespace {
 
 void printUsage() {
-    std::cout << "Usage: orbis [--size WxH] [--view lat,lon,altKm,heading,pitch] "
-                 "[--screenshot file.ppm]\n"
+    std::cout << "Usage: orbis [--size WxH] [--view lat,lon,altKm,heading,pitch] [--lod-colors]\n"
+                 "             [--sun azimuth,elevation] [--screenshot file.ppm]\n"
                  "Controls: RMB + mouse look | WASD move | Space/E up | Ctrl/Q down |\n"
-                 "          Shift boost | wheel speed | F1 wireframe | Esc quit\n";
+                 "          Shift boost | wheel speed | [ ] detail | F1 wireframe |\n"
+                 "          F2 freeze LOD | F3 LOD colours | Esc quit\n";
 }
 
 } // namespace
@@ -36,6 +37,13 @@ int main(int argc, char** argv) {
                 std::cerr << "Invalid --view, expected e.g. 48.72,21.26,500,0,-30\n";
                 return 1;
             }
+        } else if (arg == "--sun" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%lf,%lf", &options.sunAzimuth, &options.sunElevation) != 2) {
+                std::cerr << "Invalid --sun, expected azimuth,elevation e.g. 225,30\n";
+                return 1;
+            }
+        } else if (arg == "--lod-colors") {
+            options.showLodLevels = true;
         } else if (arg == "--help" || arg == "-h") {
             printUsage();
             return 0;
