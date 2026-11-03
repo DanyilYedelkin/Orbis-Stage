@@ -1,0 +1,24 @@
+// Precomputes the transmittance LUT once at startup.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(rgba16f, binding = 0) uniform writeonly image2D uOutput;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, ivec2(kTransmittanceSize)))) {
+        return;
+    }
+    float r;
+    float mu;
+    transmittanceUnitToRMu(vec2(texel) / (kTransmittanceSize - 1.0), r, mu);
+
+    // Midpoint rule, exactly like transmittanceToTop() on the CPU (checked at startup).
+    float d = distanceToTop(r, mu);
+    float dt = d / float(kTransmittanceSteps);
+    vec3 opticalDepth = vec3(0.0);
+    for (int i = 0; i < kTransmittanceSteps; ++i) {
+        float t = (float(i) + 0.5) * dt;
+        float radius = sqrt(r * r + t * t + 2.0 * r * mu * t);
+        opticalDepth += mediumAt(radius - kBottomRadius).extinction * dt;
+    }
+    imageStore(uOutput, texel, vec4(exp(-opticalDepth), 1.0));
+}

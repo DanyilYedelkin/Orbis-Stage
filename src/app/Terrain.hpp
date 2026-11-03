@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/Atmosphere.hpp"
 #include "app/gl/GlHandle.hpp"
 #include "app/gl/ShaderProgram.hpp"
 #include "core/geo/Ellipsoid.hpp"
@@ -20,6 +21,7 @@ struct TerrainDrawSettings {
     bool wireframe = false;
     bool showLodLevels = false; ///< Debug: tint every chunk by its quadtree level.
     bool geomorph = true;       ///< Smooth LOD transitions (off = classic popping, for comparison).
+    float sunIlluminance = 7.0f; ///< Relative units; the tone mapper's exposure is tuned for it.
 };
 
 struct TerrainStats {
@@ -44,7 +46,7 @@ struct TerrainStats {
 class Terrain {
 public:
     Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
-            const LodSettings& settings);
+            const LodSettings& settings, const Atmosphere& atmosphere);
 
     /// `lodCamera` drives selection; normally the real camera, a frozen copy when debugging.
     void update(const Camera& lodCamera, int viewportWidth, int viewportHeight,

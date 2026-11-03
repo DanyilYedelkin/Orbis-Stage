@@ -5,7 +5,8 @@ in VsOut {
 } fsIn;
 
 uniform vec3 uSunDirection; // unit, towards the sun
-uniform vec3 uPlanetCenter; // planet centre relative to the camera
+uniform vec3 uPlanetCenter; // planet centre relative to the camera, metres
+uniform float uSunIlluminance;
 uniform int uWireframe;
 uniform int uShowLodLevels; // debug: tint by quadtree level
 uniform int uLodLevel;
@@ -82,25 +83,45 @@ void main() {
     }
     float nDotL = max(dot(n, uSunDirection), 0.0);
 
-    vec3 sunColor = vec3(1.0, 0.96, 0.90) * 2.2;
-    float day = daylight(dot(up, uSunDirection));
-    vec3 color = albedo * (sunColor * nDotL + kZenithSky * 0.5 * day);
+    // ---- Lighting through the atmosphere
+    vec3 fragmentPlanet = fsIn.cameraRelative - uPlanetCenter;
+    vec3 p = toAtmosphere(fragmentPlanet);
+    float r = max(length(p), kBottomRadius + 0.001);
+    vec3 sunA = directionToAtmosphere(uSunDirection);
+    float muSun = dot(normalize(p), sunA);
+
+    // Sunlight that actually reaches this point: dimmed and reddened by the air above it, and
+    // zero in the planet's shadow. Mountain tops keep the light after the valleys lose it.
+    vec3 sunlight = uSunIlluminance * sunTransmittance(r, muSun);
+    vec3 color = albedo / kPi * sunlight * nDotL;
+
+    // Skylight (simplified: a blue ambient that fades through twilight). A proper sky irradiance
+    // LUT is a possible next step.
+    float twilight = smoothstep(-0.12, 0.25, muSun);
+    color += albedo * uSunIlluminance * vec3(0.020, 0.035, 0.070) * twilight;
 
     // Sun glint on water (Blinn-Phong).
     if (fsIn.elevation < 0.0) {
         vec3 halfVector = normalize(uSunDirection + toCamera);
-        color += vec3(1.0, 0.95, 0.85) * pow(max(dot(n, halfVector), 0.0), 600.0) * 1.5 * nDotL;
+        color += sunlight * pow(max(dot(n, halfVector), 0.0), 600.0) * 0.5 * nDotL;
     }
 
-    // Aerial perspective. What matters is how much AIR lies between the eye and the surface:
-    // from orbit looking down that is only the ~8 km thick lower atmosphere (a light tint),
-    // at the limb or near the ground at a shallow angle it is the whole distance (strong haze).
-    float dist = length(fsIn.cameraRelative);
-    float cosView = max(dot(up, toCamera), 0.02);
-    float airPath = min(dist, 8000.0 / cosView);
-    float haze = 1.0 - exp(-airPath / 120000.0);
-    vec3 hazeColor = kHorizonSky * day;
-    color = mix(color, hazeColor, haze);
+    // ---- Aerial perspective: the air between the eye and the surface dims it (transmittance)
+    // and adds its own scattered light (in-scattering) - the same integral as the sky, so the
+    // distant mountains fade into exactly the colour of the sky behind them.
+    vec3 eye = toAtmosphere(-uPlanetCenter);
+    vec3 toFragment = p - eye;
+    float fragmentDistance = length(toFragment);
+    vec3 viewDir = toFragment / fragmentDistance;
+    vec2 top = raySphere(eye, viewDir, kTopRadius);
+    float t0 = max(top.x, 0.0);
+    float t1 = min(fragmentDistance, top.y);
+    if (t1 > t0) {
+        vec3 inScattered;
+        vec3 transmittance;
+        integrateScattering(eye, viewDir, t0, t1, sunA, 12, inScattered, transmittance);
+        color = color * transmittance + inScattered * uSunIlluminance;
+    }
 
     fragColor = vec4(toDisplay(color), 1.0);
 }

@@ -17,6 +17,9 @@ public:
     ShaderProgram(std::string_view vertexSource, std::string_view fragmentSource,
                   std::string_view debugName);
 
+    /// A compute program (GL 4.3+).
+    static ShaderProgram compute(std::string_view computeSource, std::string_view debugName);
+
     void use() const { glUseProgram(program_.get()); }
 
     void set(const char* name, int value) const;
@@ -28,6 +31,7 @@ public:
 private:
     /// Looks the location up once, then caches it (glGetUniformLocation is a string search).
     GLint location(const char* name) const;
+    ShaderProgram() = default;
 
     Program program_;
     mutable std::unordered_map<std::string, GLint> locations_;

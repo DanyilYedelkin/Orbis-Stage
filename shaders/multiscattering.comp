@@ -1,0 +1,76 @@
+// Precomputes Hillaire's multiple-scattering LUT once at startup.
+//
+// For every (altitude, sun angle): march 64 directions over the sphere, gather second-order
+// scattered light L2 and the fraction f_ms of light scattered again. Treating all higher orders
+// as a geometric series 1 + f + f^2 + ... gives  Psi_ms = L2 / (1 - f_ms)  - the energy that
+// makes the sky bright and twilight soft, at a fraction of the cost of real multi-bounce
+// integration.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(rgba16f, binding = 0) uniform writeonly image2D uOutput;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(texel, ivec2(kMultiScatteringSize)))) {
+        return;
+    }
+    vec2 unit = vec2(texel) / (kMultiScatteringSize - 1.0);
+    float muSun = unit.x * 2.0 - 1.0;
+    float r = mix(kBottomRadius + 0.01, kTopRadius - 0.01, unit.y);
+    vec3 origin = vec3(0.0, 0.0, r);
+    vec3 sunDir = vec3(0.0, sqrt(max(1.0 - muSun * muSun, 0.0)), muSun);
+
+    const int kSqrtDirections = 8;
+    const int kSteps = 20;
+    const float kUniformPhase = 1.0 / (4.0 * kPi);
+    vec3 secondOrder = vec3(0.0);
+    vec3 transferFraction = vec3(0.0);
+
+    for (int i = 0; i < kSqrtDirections; ++i) {
+        for (int j = 0; j < kSqrtDirections; ++j) {
+            // Uniform directions on the sphere: cos(theta) uniform in [-1, 1], phi in [0, 2pi).
+            float cosTheta = 1.0 - 2.0 * (float(j) + 0.5) / float(kSqrtDirections);
+            float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+            float phi = 2.0 * kPi * (float(i) + 0.5) / float(kSqrtDirections);
+            vec3 dir = vec3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
+
+            float tMax = raySphere(origin, dir, kTopRadius).y;
+            vec2 ground = raySphere(origin, dir, kBottomRadius);
+            bool hitsGround = ground.x > 0.0;
+            if (hitsGround) {
+                tMax = ground.x;
+            }
+
+            vec3 luminance = vec3(0.0);
+            vec3 fraction = vec3(0.0);
+            vec3 throughput = vec3(1.0);
+            float dt = tMax / float(kSteps);
+            for (int s = 0; s < kSteps; ++s) {
+                vec3 p = origin + dir * ((float(s) + 0.5) * dt);
+                float radius = length(p);
+                Medium m = mediumAt(radius - kBottomRadius);
+                vec3 scatteringCoeff = m.rayleigh + vec3(m.mie);
+                vec3 stepTransmittance = exp(-m.extinction * dt);
+                vec3 extinction = max(m.extinction, vec3(1e-9));
+
+                vec3 inScatter =
+                    scatteringCoeff * sunTransmittance(radius, dot(p / radius, sunDir)) * kUniformPhase;
+                luminance += throughput * (inScatter - inScatter * stepTransmittance) / extinction;
+                fraction += throughput * (scatteringCoeff - scatteringCoeff * stepTransmittance) / extinction;
+                throughput *= stepTransmittance;
+            }
+            if (hitsGround) { // light bounced off the (Lambertian) ground
+                vec3 p = origin + dir * tMax;
+                vec3 n = normalize(p);
+                float nDotL = clamp(dot(n, sunDir), 0.0, 1.0);
+                luminance += throughput * sunTransmittance(length(p), dot(n, sunDir)) * nDotL *
+                             kGroundAlbedo / kPi;
+            }
+            // Each direction covers 4pi / N of the sphere; with the uniform phase 1 / (4pi)
+            // the weight is simply 1 / N.
+            float weight = 1.0 / float(kSqrtDirections * kSqrtDirections);
+            secondOrder += luminance * weight;
+            transferFraction += fraction * kUniformPhase * 4.0 * kPi * weight;
+        }
+    }
+    imageStore(uOutput, texel, vec4(secondOrder / (1.0 - transferFraction), 1.0));
+}

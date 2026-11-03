@@ -127,6 +127,7 @@ void Application::buildDebugPanel(double dt) {
     if (ImGui::CollapsingHeader("Sun", ImGuiTreeNodeFlags_DefaultOpen)) {
         bool changed = sliderDouble("azimuth", sunAzimuth_, 0.0f, 360.0f, "%.0f deg");
         changed |= sliderDouble("elevation", sunElevation_, -10.0f, 90.0f, "%.0f deg");
+        ImGui::SliderFloat("intensity", &drawSettings_.sunIlluminance, 1.0f, 20.0f, "%.1f");
         if (changed) {
             // Relative to where the camera is NOW: "sun in the south-west at 20 degrees" means
             // the same thing anywhere on the planet.

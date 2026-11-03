@@ -1,7 +1,6 @@
 #include "app/Application.hpp"
 
 #include "app/DataFiles.hpp"
-#include "app/gl/DebugOutput.hpp"
 #include "core/terrain/CubeSphere.hpp"
 #include "core/terrain/EarthTerrain.hpp"
 #include "core/terrain/HeightField.hpp"
@@ -81,8 +80,14 @@ Application::Application(const AppOptions& options)
     : options_(options), window_(makeWindowConfig(options)), ui_(window_.handle()),
       elevation_(makeElevationSource(options, ellipsoid_)),
       isEarth_(dynamic_cast<const EarthTerrain*>(elevation_.get()) != nullptr),
-      terrain_(ellipsoid_, *elevation_, LodSettings{}) {
-    gl::enableDebugOutput();
+      atmosphere_(AtmosphereParameters{}, ellipsoid_), sky_(atmosphere_),
+      terrain_(ellipsoid_, *elevation_, LodSettings{}, atmosphere_) {
+    const double lutError = atmosphere_.validateAgainstCpu();
+    std::cout << "Atmosphere LUTs ready; transmittance GPU vs CPU max difference " << lutError
+              << '\n';
+    if (lutError > 0.01) {
+        throw std::runtime_error("Atmosphere transmittance LUT disagrees with the CPU reference");
+    }
 
     std::cout << "OpenGL " << glGetString(GL_VERSION) << " | " << glGetString(GL_RENDERER) << '\n';
 
@@ -341,7 +346,8 @@ void Application::renderFrame() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
-    sky_.draw(camera_, aspect, drawSettings_.sunDirection);
+    atmosphere_.bind();
+    sky_.draw(camera_, aspect, drawSettings_.sunDirection, drawSettings_.sunIlluminance);
     terrain_.draw(camera_, aspect, drawSettings_);
     if (uiFrameActive_) {
         ui_.render(); // into our framebuffer, so screenshots include it

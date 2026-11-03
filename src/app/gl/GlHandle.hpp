@@ -55,6 +55,9 @@ struct FramebufferDeleter {
 struct RenderbufferDeleter {
     void operator()(GLuint id) const { glDeleteRenderbuffers(1, &id); }
 };
+struct TextureDeleter {
+    void operator()(GLuint id) const { glDeleteTextures(1, &id); }
+};
 struct ProgramDeleter {
     void operator()(GLuint id) const { glDeleteProgram(id); }
 };
@@ -67,6 +70,7 @@ using VertexArray = GlHandle<VertexArrayDeleter>;
 using Framebuffer = GlHandle<FramebufferDeleter>;
 using Renderbuffer = GlHandle<RenderbufferDeleter>;
 using Program = GlHandle<ProgramDeleter>;
+using Texture = GlHandle<TextureDeleter>;
 using Shader = GlHandle<ShaderDeleter>;
 
 /// glCreate* (DSA, GL 4.5) creates fully initialised objects without binding them.

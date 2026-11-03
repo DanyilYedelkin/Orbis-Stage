@@ -12,7 +12,8 @@ add_library(orbis_core STATIC
     terrain/ChunkMesh.cpp
     terrain/Quadtree.cpp
     terrain/ChunkBuilder.cpp
-    scene/Camera.cpp)
+    scene/Camera.cpp
+    atmosphere/AtmosphereModel.cpp)
 add_library(orbis::core ALIAS orbis_core)
 
 # Includes are written as "core/..." so their origin is obvious at a glance.

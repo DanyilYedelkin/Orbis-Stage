@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace orbis {
@@ -17,9 +18,11 @@ constexpr std::uint64_t kEvictAfterFrames = 600;   // ~10 s unused at 60 fps
 } // namespace
 
 Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
-                 const LodSettings& settings)
+                 const LodSettings& settings, const Atmosphere& atmosphere)
     : ellipsoid_(ellipsoid), lod_(ellipsoid, settings),
-      shader_(shaders::terrain_vert, gl::composeShader(shaders::common_glsl, shaders::terrain_frag),
+      shader_(shaders::terrain_vert,
+              gl::composeShader(std::string(shaders::common_glsl) + atmosphere.shaderPrelude(),
+                                shaders::terrain_frag),
               "terrain"),
       indexBuffer_(gl::createBuffer()),
       // The lambda captures the ellipsoid by value and the elevation source by reference:
@@ -29,6 +32,8 @@ Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
               return buildChunkMesh(key.region(), n, ellipsoid, elevation);
           },
           ChunkBuilder::defaultThreadCount()) {
+    shader_.set("uTransmittanceLut", 0);
+    shader_.set("uMultiScatteringLut", 1);
     const std::vector<std::uint16_t> indices = buildChunkIndices(settings.quadsPerEdge);
     indexCount_ = static_cast<GLsizei>(indices.size());
     trianglesPerChunk_ = indices.size() / 3;
@@ -164,6 +169,7 @@ void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings
     shader_.set("uWireframe", settings.wireframe ? 1 : 0);
     shader_.set("uShowLodLevels", settings.showLodLevels ? 1 : 0);
     shader_.set("uMorphEnabled", settings.geomorph ? 1 : 0);
+    shader_.set("uSunIlluminance", settings.sunIlluminance);
 
     glPolygonMode(GL_FRONT_AND_BACK, settings.wireframe ? GL_LINE : GL_FILL);
 

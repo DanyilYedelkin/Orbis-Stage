@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/Atmosphere.hpp"
 #include "app/gl/GlHandle.hpp"
 #include "app/gl/ShaderProgram.hpp"
 #include "core/math/Vec3.hpp"
@@ -7,13 +8,14 @@
 
 namespace orbis {
 
-/// Fullscreen sky: blue gradient near the ground fading to black space with altitude, a sun disk,
-/// and dusk colours. Uses the same atmosphere functions as the terrain haze, so distant
-/// mountains blend into the sky behind them.
+/// Fullscreen physically based sky: every pixel integrates Rayleigh + Mie + ozone scattering
+/// along its view ray through the atmosphere (see shaders/atmosphere.glsl). The terrain uses the
+/// same integral for aerial perspective, so distant mountains fade into the sky behind them.
 class Sky {
 public:
-    Sky();
-    void draw(const Camera& camera, float aspect, const Vec3d& sunDirection) const;
+    explicit Sky(const Atmosphere& atmosphere);
+    void draw(const Camera& camera, float aspect, const Vec3d& sunDirection,
+              float sunIlluminance) const;
 
 private:
     gl::ShaderProgram shader_;

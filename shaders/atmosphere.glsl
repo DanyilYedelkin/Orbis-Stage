@@ -1,0 +1,129 @@
+// Physically based atmosphere (S. Hillaire, EGSR 2020), shared by the LUT compute shaders, the
+// sky and the terrain. Constants (kBottomRadius, kRayleighScattering, ...) are generated from the
+// C++ AtmosphereParameters and prepended. Units: km, 1/km.
+
+uniform sampler2D uTransmittanceLut;
+uniform sampler2D uMultiScatteringLut;
+
+const float kPi = 3.14159265358979;
+
+struct Medium {
+    vec3 rayleigh;   // scattering
+    float mie;       // scattering
+    vec3 extinction; // scattering + absorption
+};
+
+Medium mediumAt(float altitude) {
+    float rayleighDensity = exp(-altitude / kRayleighScaleHeight);
+    float mieDensity = exp(-altitude / kMieScaleHeight);
+    float ozoneDensity = max(0.0, 1.0 - abs(altitude - kOzoneCenter) / (kOzoneWidth * 0.5));
+    Medium m;
+    m.rayleigh = kRayleighScattering * rayleighDensity;
+    m.mie = kMieScattering * mieDensity;
+    m.extinction = m.rayleigh + vec3(kMieExtinction * mieDensity) + kOzoneAbsorption * ozoneDensity;
+    return m;
+}
+
+// Texel centres sit exactly on x = 0 and x = 1, so the horizon and the zenith are stored exactly.
+float unitToTexCoord(float x, float size) { return 0.5 / size + x * (1.0 - 1.0 / size); }
+
+float distanceToTop(float r, float mu) {
+    float discriminant = r * r * (mu * mu - 1.0) + kTopRadius * kTopRadius;
+    return max(0.0, -r * mu + sqrt(max(discriminant, 0.0)));
+}
+
+// Same formulas as transmittanceUnitToRMu / transmittanceRMuToUnit in AtmosphereModel.cpp.
+void transmittanceUnitToRMu(vec2 unit, out float r, out float mu) {
+    float h = sqrt(kTopRadius * kTopRadius - kBottomRadius * kBottomRadius);
+    float rho = h * unit.y;
+    r = sqrt(rho * rho + kBottomRadius * kBottomRadius);
+    float dMin = kTopRadius - r;
+    float dMax = rho + h;
+    float d = dMin + unit.x * (dMax - dMin);
+    mu = d == 0.0 ? 1.0 : clamp((h * h - rho * rho - d * d) / (2.0 * r * d), -1.0, 1.0);
+}
+
+vec2 transmittanceRMuToUv(float r, float mu) {
+    float h = sqrt(kTopRadius * kTopRadius - kBottomRadius * kBottomRadius);
+    float rho = sqrt(max(r * r - kBottomRadius * kBottomRadius, 0.0));
+    float dMin = kTopRadius - r;
+    float dMax = rho + h;
+    float xMu = (distanceToTop(r, mu) - dMin) / (dMax - dMin);
+    return vec2(unitToTexCoord(xMu, kTransmittanceSize.x), unitToTexCoord(rho / h, kTransmittanceSize.y));
+}
+
+// Light from the sun reaching radius r, sun at cosine-of-zenith muSun. The planet's shadow is
+// softened over ~0.5 degrees (the sun is a disk, not a point) instead of a hard cut.
+vec3 sunTransmittance(float r, float muSun) {
+    float sinHorizon = kBottomRadius / r;
+    float cosHorizon = -sqrt(max(1.0 - sinHorizon * sinHorizon, 0.0));
+    float visible = smoothstep(-0.0047, 0.0047, muSun - cosHorizon);
+    return texture(uTransmittanceLut, transmittanceRMuToUv(r, muSun)).rgb * visible;
+}
+
+vec3 multipleScattering(float r, float muSun) {
+    vec2 uv = vec2(unitToTexCoord(muSun * 0.5 + 0.5, kMultiScatteringSize),
+                   unitToTexCoord(clamp((r - kBottomRadius) / (kTopRadius - kBottomRadius), 0.0, 1.0),
+                                  kMultiScatteringSize));
+    return texture(uMultiScatteringLut, uv).rgb;
+}
+
+float rayleighPhase(float c) { return 3.0 / (16.0 * kPi) * (1.0 + c * c); }
+
+float miePhase(float c) { // Cornette-Shanks: Henyey-Greenstein with a better backward lobe
+    float g = kMieAnisotropy;
+    float g2 = g * g;
+    float k = 3.0 / (8.0 * kPi) * (1.0 - g2) / (2.0 + g2);
+    return k * (1.0 + c * c) / pow(1.0 + g2 - 2.0 * g * c, 1.5);
+}
+
+// Ray-sphere (centre at origin): (near, far) distances, both negative on a miss.
+vec2 raySphere(vec3 origin, vec3 dir, float radius) {
+    float b = dot(origin, dir);
+    float c = dot(origin, origin) - radius * radius;
+    float discriminant = b * b - c;
+    if (discriminant < 0.0) {
+        return vec2(-1.0);
+    }
+    float s = sqrt(discriminant);
+    return vec2(-b - s, -b + s);
+}
+
+// In-scattered light and transmittance along origin + t * dir, t in [t0, t1], for a sun of
+// illuminance 1. Single scattering with the real phase functions plus Hillaire's multiple
+// scattering term. Steps are denser near t0 (the eye), where detail matters most; each step is
+// integrated analytically (energy-conserving even with few steps).
+void integrateScattering(vec3 origin, vec3 dir, float t0, float t1, vec3 sunDir, int steps,
+                         out vec3 luminance, out vec3 transmittance) {
+    luminance = vec3(0.0);
+    transmittance = vec3(1.0);
+    float cosTheta = dot(dir, sunDir);
+    float phaseR = rayleighPhase(cosTheta);
+    float phaseM = miePhase(cosTheta);
+    float previous = t0;
+    for (int i = 0; i < steps; ++i) {
+        float x = (float(i) + 1.0) / float(steps);
+        float t = t0 + (t1 - t0) * x * x;
+        float dt = t - previous;
+        vec3 p = origin + dir * (0.5 * (t + previous));
+        previous = t;
+
+        float r = length(p);
+        float muSun = dot(p / r, sunDir);
+        Medium m = mediumAt(r - kBottomRadius);
+        vec3 stepTransmittance = exp(-m.extinction * dt);
+        vec3 scattering = (m.rayleigh * phaseR + m.mie * phaseM) * sunTransmittance(r, muSun) +
+                          (m.rayleigh + m.mie) * multipleScattering(r, muSun);
+        vec3 integral = (scattering - scattering * stepTransmittance) / max(m.extinction, vec3(1e-9));
+        luminance += transmittance * integral;
+        transmittance *= stepTransmittance;
+    }
+}
+
+// Planet-centred metres (on the WGS84 ellipsoid) -> km in the spherical atmosphere model.
+// Scaling z by a/b turns the ellipsoid into a sphere (the same trick as the horizon culling):
+// altitudes above the ellipsoid become altitudes above the sphere, to within 0.3%.
+vec3 toAtmosphere(vec3 planetMeters) {
+    return vec3(planetMeters.xy, planetMeters.z * kEllipsoidAOverB) * kMetersToAtmosphereKm;
+}
+vec3 directionToAtmosphere(vec3 d) { return normalize(vec3(d.xy, d.z * kEllipsoidAOverB)); }

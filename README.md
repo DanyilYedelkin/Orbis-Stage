@@ -15,7 +15,9 @@ planetary scale, and streaming terrain generation on worker threads.**
 |---|---|
 | ![Procedural](docs/procedural.png) | ![LOD levels](docs/lod-levels.png) |
 
-![Debug panel](docs/debug-panel.png)
+| Sunset: colours from physics, not from a palette | Debug panel |
+|---|---|
+| ![Sunset](docs/sunset.png) | ![Debug panel](docs/debug-panel.png) |
 
 *All frames rendered headless in CI with Mesa's software OpenGL (llvmpipe).*
 
@@ -142,24 +144,46 @@ Himalaya, Andes), LOD statistics and controls (pixel error, max level, geomorphi
 wireframe, freeze), and the sun's local azimuth / elevation. Input over the panel is not passed to
 the camera. `F4` hides it.
 
-### Rendering
+### Physically based atmosphere
 
-Sky pass sharing its atmosphere functions with the terrain haze (distant mountains fade into the
-sky behind them); haze based on the *air path length*, so orbit views get a light tint and
-ground-level views get real aerial perspective; ACES filmic tone mapping; sun disk and dusk colours.
+After S. Hillaire, *A Scalable and Production Ready Sky and Atmosphere Rendering Technique*
+(EGSR 2020) — the approach used by Unreal Engine. Rayleigh scattering (air molecules), Mie
+scattering (aerosols, Cornette-Shanks phase) and ozone absorption with physical coefficients. Two
+lookup tables are computed once at startup by **compute shaders**: transmittance (Bruneton's
+parameterisation, texels concentrated near the horizon) and Hillaire's multiple-scattering
+approximation (second-order light over 64 directions, higher orders as a geometric series). Per
+frame, every sky pixel and every terrain fragment integrates in-scattering along its view ray
+(analytically per step, so few steps stay energy-conserving). The blue sky, the pale horizon,
+the red low sun, orange light on the mountains at dusk, the planet's glowing limb and the haze
+that makes distant ranges fade into exactly the sky colour behind them all *emerge* from the
+same integral — none of them is painted.
+
+- **Single source of truth.** The physical constants live in one C++ struct; the GLSL constants
+  are generated from it, so CPU tests and GPU shaders cannot drift apart. Unit tests check the CPU
+  model against the closed-form optical depth (to 10⁻⁴) and that the horizon sun is red.
+- **GPU validated against CPU at startup.** The transmittance table is read back and compared
+  with the C++ reference: the largest difference is 5·10⁻⁴, i.e. half-float precision.
+- **WGS84 in a spherical model.** Atmosphere models assume a sphere; scaling z by a/b maps the
+  ellipsoid onto one (the same trick as the horizon culling), so altitudes stay correct to 0.3 %.
+- Sun light reaching each surface point is dimmed and reddened by the air above it and softly
+  cut by the planet's shadow (mountain tops keep the light after the valleys lose it). Skylight
+  is still a simple twilight-scaled ambient term — an irradiance table is a possible next step.
+
+ACES filmic tone mapping turns the HDR result into display values.
 
 ### Engineering
 
 - `orbis_core` has no OpenGL or windowing dependency: math, geodesy, terrain, LOD and the thread
-  pool are all unit-tested — **69 Catch2 tests**, ~460 000 assertions, including checks against
-  known geography and parent/child geomorph consistency.
+  pool are all unit-tested — **74 Catch2 tests**, ~460 000 assertions, including checks against
+  known geography, parent/child geomorph consistency and the analytic atmosphere.
 - CI: Windows (MSVC) + Linux (GCC), Debug + Release, warnings as errors
   (`/W4`, `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wdouble-promotion ...`),
   **AddressSanitizer + UBSan**, **ThreadSanitizer**, and a headless render job that uploads frames.
 - Dependencies pinned by version **and** SHA-256; shaders embedded at build time, shared GLSL with
   `#line` so compiler errors point at the right line.
-- Modern OpenGL: Direct State Access, immutable buffer storage, RAII ownership of every GL object,
-  `KHR_debug` output in debug builds; member order guarantees GL objects die before the context and
+- Modern OpenGL: Direct State Access, immutable storage, compute shaders, RAII ownership of every
+  GL object, `KHR_debug` output enabled right after context creation in debug builds (so GPU work
+  done while other objects are still being constructed is checked too); member order guarantees GL objects die before the context and
   worker threads join before the data they read.
 
 ## Building
@@ -229,8 +253,9 @@ src/core/      engine core, no GPU dependency
   terrain/     cube-sphere, noise, elevation sources (ETOPO grid, procedural), chunk meshes +
                skirts, quadtree LOD, thread pool
   scene/       ENU flight camera
+  atmosphere/  physical atmosphere model (CPU reference) and GLSL constant generation
 src/app/       window, terrain streaming + GPU cache, sky, debug panel, OpenGL wrappers, app loop
-shaders/       GLSL, embedded into the executable at build time
+shaders/       GLSL (incl. atmosphere compute shaders), embedded into the executable at build time
 data/          earth_etopo10.oeg - ETOPO1 elevation grid (generated by tools/prepare_etopo.py)
 tools/         data preparation scripts
 tests/         Catch2 unit tests
@@ -247,7 +272,9 @@ tests/         Catch2 unit tests
 - [ ] **Land cover data** instead of the latitude stylisation.
 - [x] **Smooth transitions and tooling:** geomorphing (measured 6× less popping), ImGui debug
       panel, LOD recording for objective comparisons.
-- [ ] **Physically based atmosphere** (precomputed scattering).
+- [x] **Physically based atmosphere:** Hillaire 2020 LUTs in compute shaders, sky and aerial
+      perspective, GPU/CPU validation.
+- [ ] **Sky irradiance table** for physically based ambient light; clouds.
 
 ## References
 
@@ -261,3 +288,6 @@ tests/         Catch2 unit tests
 - K. Perlin — *Improving Noise* (2002); F. K. Musgrave — *Texturing and Modeling: A Procedural
   Approach*, ch. on ridged multifractals.
 - N. Reed — *Depth Precision Visualized* (reversed-Z).
+- S. Hillaire — *A Scalable and Production Ready Sky and Atmosphere Rendering Technique* (2020).
+- E. Bruneton, F. Neyret — *Precomputed Atmospheric Scattering* (2008); E. Bruneton's 2017
+  reference implementation (transmittance parameterisation).

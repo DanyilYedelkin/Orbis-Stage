@@ -1,5 +1,7 @@
 #include "app/Window.hpp"
 
+#include "app/gl/DebugOutput.hpp"
+
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 
@@ -39,6 +41,9 @@ Window::Window(const WindowConfig& config) {
         glfwTerminate();
         throw std::runtime_error("Failed to load OpenGL functions");
     }
+    // As early as possible: every GL call after this point - including GPU work done while
+    // other members are still being constructed - is checked by the driver in debug builds.
+    gl::enableDebugOutput();
 
     // Lambdas without captures convert to the C function pointers GLFW expects;
     // the user pointer is how they find their Window instance.

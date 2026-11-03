@@ -5,6 +5,7 @@ add_executable(orbis
     Terrain.cpp
     Sky.cpp
     DataFiles.cpp
+    Atmosphere.cpp
     DebugUi.cpp
     ApplicationUi.cpp
     gl/ShaderProgram.cpp
@@ -13,6 +14,9 @@ add_executable(orbis
 
 orbis_embed_shaders(orbis
     "${PROJECT_SOURCE_DIR}/shaders/common.glsl"
+    "${PROJECT_SOURCE_DIR}/shaders/atmosphere.glsl"
+    "${PROJECT_SOURCE_DIR}/shaders/transmittance.comp"
+    "${PROJECT_SOURCE_DIR}/shaders/multiscattering.comp"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.vert"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.frag"
     "${PROJECT_SOURCE_DIR}/shaders/sky.vert"

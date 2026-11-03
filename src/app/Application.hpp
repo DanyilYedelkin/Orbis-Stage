@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/Atmosphere.hpp"
 #include "app/DebugUi.hpp"
 #include "app/Sky.hpp"
 #include "app/Terrain.hpp"
@@ -94,6 +95,7 @@ private:
     bool isEarth_ = false;
     Camera camera_{ellipsoid_};
     gl::RenderTarget renderTarget_;
+    Atmosphere atmosphere_; ///< Before Sky and Terrain: their shaders are built from its prelude.
     Sky sky_;
     Terrain terrain_;
     TerrainDrawSettings drawSettings_;

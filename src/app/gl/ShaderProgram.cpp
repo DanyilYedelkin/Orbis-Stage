@@ -23,10 +23,11 @@ Shader compile(GLenum stage, std::string_view source, std::string_view debugName
         glGetShaderiv(shader.get(), GL_INFO_LOG_LENGTH, &logLength);
         std::vector<GLchar> log(static_cast<std::size_t>(std::max(logLength, 1)));
         glGetShaderInfoLog(shader.get(), logLength, nullptr, log.data());
+        const char* suffix = stage == GL_VERTEX_SHADER     ? ".vert'"
+                             : stage == GL_FRAGMENT_SHADER ? ".frag'"
+                                                           : ".comp'";
         throw std::runtime_error(std::string("Shader compile error in '") +
-                                 std::string(debugName) +
-                                 (stage == GL_VERTEX_SHADER ? ".vert'" : ".frag'") + ":\n" +
-                                 log.data());
+                                 std::string(debugName) + suffix + ":\n" + log.data());
     }
     return shader;
 }
@@ -56,6 +57,27 @@ ShaderProgram::ShaderProgram(std::string_view vertexSource, std::string_view fra
         throw std::runtime_error("Shader link error in '" + std::string(debugName) + "':\n" +
                                  log.data());
     }
+}
+
+ShaderProgram ShaderProgram::compute(std::string_view computeSource, std::string_view debugName) {
+    ShaderProgram result;
+    result.program_ = Program{glCreateProgram()};
+    const Shader cs = compile(GL_COMPUTE_SHADER, computeSource, debugName);
+    glAttachShader(result.program_.get(), cs.get());
+    glLinkProgram(result.program_.get());
+    glDetachShader(result.program_.get(), cs.get());
+
+    GLint ok = GL_FALSE;
+    glGetProgramiv(result.program_.get(), GL_LINK_STATUS, &ok);
+    if (ok != GL_TRUE) {
+        GLint logLength = 0;
+        glGetProgramiv(result.program_.get(), GL_INFO_LOG_LENGTH, &logLength);
+        std::vector<GLchar> log(static_cast<std::size_t>(std::max(logLength, 1)));
+        glGetProgramInfoLog(result.program_.get(), logLength, nullptr, log.data());
+        throw std::runtime_error("Compute link error in '" + std::string(debugName) + "':\n" +
+                                 log.data());
+    }
+    return result;
 }
 
 GLint ShaderProgram::location(const char* name) const {
