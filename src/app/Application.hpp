@@ -2,6 +2,7 @@
 
 #include "app/Atmosphere.hpp"
 #include "app/DebugUi.hpp"
+#include "app/ShadowCascades.hpp"
 #include "app/Sky.hpp"
 #include "app/Terrain.hpp"
 #include "app/Window.hpp"
@@ -30,6 +31,9 @@ struct AppOptions {
     bool showLodLevels = false;                ///< Start with the LOD debug colouring on.
     bool showUi = true;                        ///< Debug panel (off by default for screenshots).
     bool geomorph = true;
+    bool shadows = true;
+    double fovDegrees = 45.0;  ///< Vertical field of view.
+    bool viewAboveGround = false; ///< --view altitude measured from the terrain, not sea level.
     int recordFrames = 0;      ///< With screenshotPath: fly forward, save this many frames.
     double recordStep = 0.0;   ///< Metres per recorded frame.
     /// Move only the LOD camera while the view stays fixed: every change between frames is
@@ -72,6 +76,10 @@ private:
     void handleInput(double dt);
     void updateTerrain(std::size_t maxUploads);
     void settleTerrain(); ///< Stream until the LOD for the current view is complete.
+    /// Terrain height (m) under an ECEF point, at ~1 m detail - what the finest LOD shows.
+    double groundHeightAt(const Vec3d& ecef) const;
+    /// Keeps the camera above the terrain (not just above sea level): no flying through mountains.
+    void clampCameraToGround();
     void renderFrame();
     void updateTitle(double dt);
     void saveScreenshot(const std::string& path) const;
@@ -98,6 +106,7 @@ private:
     Atmosphere atmosphere_; ///< Before Sky and Terrain: their shaders are built from its prelude.
     Sky sky_;
     Terrain terrain_;
+    ShadowCascades shadows_;
     TerrainDrawSettings drawSettings_;
 
     // Debug: when set, LOD selection uses this camera while you fly around with the real one,

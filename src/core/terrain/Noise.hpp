@@ -14,11 +14,21 @@ namespace orbis {
 /// SplitMix64 + Fisher-Yates instead of std::shuffle, whose algorithm is implementation-defined.
 /// Same seed => bit-identical terrain on MSVC and GCC, which matters for networked or replayed
 /// simulations where every machine must agree on the world.
+struct NoiseSample {
+    double value;
+    Vec3d gradient; ///< d(value)/dp, analytic.
+};
+
 class PerlinNoise {
 public:
     explicit PerlinNoise(std::uint64_t seed);
 
     double sample(const Vec3d& p) const;
+
+    /// Value AND exact gradient in one evaluation (the derivative of the quintic fade and of the
+    /// corner gradients, after I. Quilez). Needed by erodedFbm(), which shapes each octave by the
+    /// slope accumulated so far.
+    NoiseSample sampleWithGradient(const Vec3d& p) const;
 
 private:
     std::array<std::uint8_t, 512> perm_{};
@@ -43,6 +53,15 @@ struct FbmParams {
 /// identical at every level of detail.
 double fbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
            double maxFrequency = std::numeric_limits<double>::infinity());
+
+/// "Eroded" fBm on the sphere (after I. Quilez): each octave is damped by 1 / (1 + k |d|^2), where
+/// d is the slope accumulated by the previous octaves. Steep flanks therefore stay smooth while
+/// detail survives on ridges and valley floors - the look of terrain shaped by erosion: long
+/// clean slopes, sharp crests, flat-bottomed valleys. `unitDirection` is the point on the unit
+/// sphere; only the TANGENTIAL part of the gradient counts as slope. Output roughly [-1, 1].
+double erodedFbm(const PerlinNoise& noise, const Vec3d& unitDirection, double base,
+                 const FbmParams& params, double erosion,
+                 double maxFrequency = std::numeric_limits<double>::infinity());
 
 /// Ridged multifractal (F. K. Musgrave): mountain ranges with sharp crests and smooth valleys.
 /// Each octave is (1 - |noise|)^2 - a crest where smooth noise crosses zero - and is weighted by

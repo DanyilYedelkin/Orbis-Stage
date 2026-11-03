@@ -16,12 +16,15 @@
 
 namespace orbis {
 
+class ShadowCascades;
+
 struct TerrainDrawSettings {
     Vec3d sunDirection{1.0, 0.0, 0.0}; ///< Unit vector towards the sun, ECEF.
     bool wireframe = false;
     bool showLodLevels = false; ///< Debug: tint every chunk by its quadtree level.
     bool geomorph = true;       ///< Smooth LOD transitions (off = classic popping, for comparison).
     float sunIlluminance = 7.0f; ///< Relative units; the tone mapper's exposure is tuned for it.
+    bool shadows = true;
 };
 
 struct TerrainStats {
@@ -51,7 +54,13 @@ public:
     /// `lodCamera` drives selection; normally the real camera, a frozen copy when debugging.
     void update(const Camera& lodCamera, int viewportWidth, int viewportHeight,
                 std::size_t maxUploads);
-    void draw(const Camera& camera, float aspect, const TerrainDrawSettings& settings) const;
+    /// `shadows` may be null (no shadowing).
+    void draw(const Camera& camera, float aspect, const TerrainDrawSettings& settings,
+              const ShadowCascades* shadows) const;
+
+    /// Depth-only pass with the same geometry and morphing as draw(), for the shadow maps.
+    void drawDepth(const gl::ShaderProgram& program, const Camera& camera,
+                   const Mat4f& viewProjection, bool geomorph) const;
 
     /// Last selection requested nothing and no build is in flight: the image is final.
     bool settled() const;
@@ -70,6 +79,9 @@ private:
     };
 
     void upload(const NodeKey& key, const ChunkMesh& mesh);
+    /// The per-chunk part shared by every pass: offsets, morph window, draw call.
+    void drawChunks(const gl::ShaderProgram& program, const Vec3d& viewOrigin,
+                    bool withDebugLevel) const;
     void evict();
 
     Ellipsoid ellipsoid_;

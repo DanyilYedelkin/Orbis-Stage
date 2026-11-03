@@ -9,8 +9,8 @@ namespace {
 
 void printUsage() {
     std::cout << "Usage: orbis [--world earth|procedural] [--elevation file.oeg] [--size WxH]\n"
-                 "             [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation]\n"
-                 "             [--lod-colors] [--no-geomorph]\n"
+                 "             [--view lat,lon,altKm,heading,pitch [--above-ground]] [--sun az,el]\n"
+                 "             [--fov degrees] [--lod-colors] [--no-geomorph] [--no-shadows]\n"
                  "             [--screenshot file.ppm [--show-ui] [--record frames,metres]\n"
                  "             [--record-lod-only]]\n"
                  "Controls: RMB + mouse look | WASD move | Space/E up | Ctrl/Q down |\n"
@@ -58,6 +58,16 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--elevation" && i + 1 < argc) {
             options.elevationFile = argv[++i];
+        } else if (arg == "--fov" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%lf", &options.fovDegrees) != 1 || options.fovDegrees < 5.0 ||
+                options.fovDegrees > 120.0) {
+                std::cerr << "Invalid --fov, expected degrees between 5 and 120\n";
+                return 1;
+            }
+        } else if (arg == "--above-ground") {
+            options.viewAboveGround = true;
+        } else if (arg == "--no-shadows") {
+            options.shadows = false;
         } else if (arg == "--no-geomorph") {
             options.geomorph = false;
         } else if (arg == "--record" && i + 1 < argc) {

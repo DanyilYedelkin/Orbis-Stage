@@ -105,3 +105,35 @@ TEST_CASE("soft crests remove the slope discontinuity of ridged noise", "[noise]
     CHECK(sharp > 1.0);         // a kink: the slope jumps by O(1) across a crest
     CHECK(soft < sharp * 0.05); // rounded: the slope changes smoothly
 }
+
+TEST_CASE("analytic noise gradient matches finite differences", "[noise]") {
+    const PerlinNoise n(31);
+    std::mt19937_64 rng(6);
+    std::uniform_real_distribution<double> coord(-50.0, 50.0);
+    constexpr double h = 1e-6;
+    for (int i = 0; i < 2000; ++i) {
+        const Vec3d p{coord(rng), coord(rng), coord(rng)};
+        const NoiseSample s = n.sampleWithGradient(p);
+        REQUIRE_THAT(s.value, WithinAbs(n.sample(p), 1e-12)); // same function
+        const Vec3d numeric{(n.sample(p + Vec3d{h, 0, 0}) - n.sample(p - Vec3d{h, 0, 0})) / (2 * h),
+                            (n.sample(p + Vec3d{0, h, 0}) - n.sample(p - Vec3d{0, h, 0})) / (2 * h),
+                            (n.sample(p + Vec3d{0, 0, h}) - n.sample(p - Vec3d{0, 0, h})) / (2 * h)};
+        REQUIRE(distance(s.gradient, numeric) < 1e-6);
+    }
+}
+
+TEST_CASE("eroded fBm stays bounded and is calmer on steep ground", "[noise]") {
+    const PerlinNoise n(41);
+    std::mt19937_64 rng(8);
+    std::normal_distribution<double> gauss;
+    double plain = 0.0;
+    double eroded = 0.0;
+    for (int i = 0; i < 5000; ++i) {
+        const Vec3d dir = normalize(Vec3d{gauss(rng), gauss(rng), gauss(rng)});
+        const double e = erodedFbm(n, dir, 50.0, {.octaves = 8}, 1.0);
+        REQUIRE(std::abs(e) <= 1.1);
+        plain += std::abs(erodedFbm(n, dir, 50.0, {.octaves = 8}, 0.0));
+        eroded += std::abs(e);
+    }
+    CHECK(eroded < plain); // damping can only remove energy
+}

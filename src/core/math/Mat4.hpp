@@ -96,6 +96,30 @@ Mat4<T> viewRotation(const Vec3<T>& right, const Vec3<T>& up, const Vec3<T>& for
     return m;
 }
 
+/// Orthographic projection for a view looking down -Z, depth mapped to [0, 1] (the clip control
+/// used everywhere in the renderer). Standard depth here (near -> 0): shadow maps need no
+/// reversed-Z, their range is short and linear.
+template <typename T>
+Mat4<T> orthographicZeroToOne(T halfWidth, T halfHeight, T zNear, T zFar) {
+    Mat4<T> m = Mat4<T>::identity();
+    m(0, 0) = T(1) / halfWidth;
+    m(1, 1) = T(1) / halfHeight;
+    m(2, 2) = T(-1) / (zFar - zNear);
+    m(3, 2) = -zNear / (zFar - zNear);
+    return m;
+}
+
+/// View matrix of a camera at `eye` with an orthonormal basis: rotation, then translation.
+template <typename T>
+Mat4<T> viewMatrix(const Vec3<T>& eye, const Vec3<T>& right, const Vec3<T>& up,
+                   const Vec3<T>& forward) {
+    Mat4<T> m = viewRotation(right, up, forward);
+    m(3, 0) = -dot(right, eye);
+    m(3, 1) = -dot(up, eye);
+    m(3, 2) = dot(forward, eye);
+    return m;
+}
+
 using Mat4f = Mat4<float>;
 using Mat4d = Mat4<double>;
 

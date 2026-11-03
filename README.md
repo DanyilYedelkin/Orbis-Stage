@@ -7,9 +7,9 @@ planetary scale, and streaming terrain generation on worker threads.**
 
 ![Earth from orbit](docs/earth-orbit.png)
 
-| The Alpine arc from 70 km (real data + synthetic detail) | High Tatras from the south |
+| The Alpine arc from 70 km (real data + synthetic detail) | An Alpine valley, looking up 2.6 km of relief |
 |---|---|
-| ![Alps](docs/alps.png) | ![Tatras](docs/tatras.png) |
+| ![Alps](docs/alps.png) | ![Valley](docs/valley-alps.png) |
 
 | Procedural planet (`--world procedural`) | Quadtree LOD levels (debug view, F3) |
 |---|---|
@@ -50,6 +50,40 @@ every lowland fills with puddles); the other way round gives natural fractal coa
 peaks from the ground — that needs higher-resolution tiles (see roadmap). Land cover is a
 latitude/elevation stylisation (arid subtropical belts, temperate forest, taiga, tundra, tree, rock
 and snow lines fitted to real references), so e.g. monsoon Nepal comes out arid.
+
+### Making mountains feel big
+
+Mountains first looked small and soft. Instead of tuning by eye, the problem was **measured**:
+the share of the area steeper than 30° in a 20 km square, sampled every 30 m.
+
+| | before | after | reality |
+|---|---|---|---|
+| Valais Alps, > 30° | **0 %** | 38 % | Valais is among the steepest parts of the Alps |
+| Valais Alps, relief | 0.9 km | 3.1 km | ~3 km |
+| High Tatras, highest point | — | 2725 m | Gerlachovský štít 2655 m |
+
+The causes, and what fixed them:
+- **The synthetic relief sat at the wrong scale.** Its longest ridges had an 18 km wavelength;
+  real peaks stand 3–8 km apart. Rebuilt at 8 km with **eroded fBm** (I. Quilez): each octave is
+  damped by the slope accumulated so far, which gives clean steep flanks, sharp crests and flat
+  valley floors. It needs Perlin noise with an **analytic gradient** — tested against finite
+  differences to 10⁻⁶.
+- **Its amplitude was 5× smaller than intended.** Measuring the layers showed a standard
+  deviation of 0.09 instead of the assumed ~0.5, and the ridged layer had a mean of 0.51, so it
+  lifted terrain instead of adding relief. Both are now normalised to mean 0 / std 1 by measured
+  constants, which a test re-measures.
+- **No shadows.** Cascaded shadow maps (3 × 2048², camera-relative): splits scale with height
+  above the ground; each map extends 150 km towards the sun so mountains outside the view still
+  cast their long evening shadows into it; centres are snapped to whole texels in *world*
+  (double, ECEF) coordinates so edges do not crawl; the depth pass reuses the terrain vertex
+  shader, geomorphing included, so the surface cannot shadow itself.
+- **A wide-angle lens.** 60° vertical FOV visibly shrinks distant mountains; now 45° (adjustable),
+  and `--above-ground` puts the camera in a valley looking *up*.
+- The camera is now kept above the **terrain**, not just above sea level.
+
+![Shadows off / on](docs/shadows-compare.png)
+
+*Low sun (9°), without and with cast shadows.*
 
 ### Level of detail
 
@@ -174,8 +208,9 @@ ACES filmic tone mapping turns the HDR result into display values.
 ### Engineering
 
 - `orbis_core` has no OpenGL or windowing dependency: math, geodesy, terrain, LOD and the thread
-  pool are all unit-tested — **74 Catch2 tests**, ~460 000 assertions, including checks against
-  known geography, parent/child geomorph consistency and the analytic atmosphere.
+  pool are all unit-tested — **78 Catch2 tests**, ~470 000 assertions, including checks against
+  known geography, real-world slope statistics, parent/child geomorph consistency and the
+  analytic atmosphere.
 - CI: Windows (MSVC) + Linux (GCC), Debug + Release, warnings as errors
   (`/W4`, `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wdouble-promotion ...`),
   **AddressSanitizer + UBSan**, **ThreadSanitizer**, and a headless render job that uploads frames.
@@ -212,8 +247,8 @@ startup item, and press F5. On Linux install the X11 headers first:
 
 ```
 orbis [--world earth|procedural] [--elevation file.oeg] [--size WxH]
-      [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation]
-      [--lod-colors] [--no-geomorph]
+      [--view lat,lon,altKm,heading,pitch [--above-ground]] [--sun azimuth,elevation]
+      [--fov degrees] [--lod-colors] [--no-geomorph] [--no-shadows]
       [--screenshot file.ppm [--show-ui] [--record frames,metres [--record-lod-only]]]
 ```
 
@@ -237,7 +272,8 @@ build queue. Places to start:
 ```
 orbis                                                   # Europe from orbit, above Kosice
 orbis --view 44.3,8.6,70,5,-22 --sun 235,25             # the Alps from 70 km
-orbis --view 48.95,20.10,2.6,8,-3 --sun 250,16          # the High Tatras
+orbis --view 45.982,7.635,0.15,90,7.6 --above-ground    # an Alpine valley, looking up
+orbis --view 49.213,19.990,0.15,225,6 --above-ground    # a Tatra valley
 orbis --world procedural --view 0.30,-140.75,6.5,45,-10 # procedural mountains
 ```
 
@@ -274,6 +310,10 @@ tests/         Catch2 unit tests
       panel, LOD recording for objective comparisons.
 - [x] **Physically based atmosphere:** Hillaire 2020 LUTs in compute shaders, sky and aerial
       perspective, GPU/CPU validation.
+- [x] **Mountains that read as big:** measured slope statistics, eroded fBm, cascaded shadows,
+      45° FOV, terrain-following camera.
+- [ ] **Surface materials:** detail texturing / per-pixel variation (close up the ground still
+      looks smooth and "clay-like"), material blending by slope and height with noise.
 - [ ] **Sky irradiance table** for physically based ambient light; clouds.
 
 ## References
@@ -285,6 +325,8 @@ tests/         Catch2 unit tests
 - T. Ulrich — *Rendering Massive Terrains using Chunked Level of Detail Control* (SIGGRAPH 2002),
   including geomorphing.
 - O. Cornut — *Dear ImGui*.
+- I. Quilez — *Terrain raymarching* / analytic noise derivatives (eroded fBm).
+- W. Engel / Microsoft — *Cascaded Shadow Maps* (stable cascades, texel snapping).
 - K. Perlin — *Improving Noise* (2002); F. K. Musgrave — *Texturing and Modeling: A Procedural
   Approach*, ch. on ridged multifractals.
 - N. Reed — *Depth Precision Visualized* (reversed-Z).

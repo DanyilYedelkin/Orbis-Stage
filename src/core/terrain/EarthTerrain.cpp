@@ -14,6 +14,13 @@ constexpr int kReliefSmoothing = 2; // relief = |data - its 4x smoothed version|
 // |a - b|. More would dilute narrow ranges: reading at level 2 once shrank the Tatras' relief
 // from ~320 m to ~210 m and flattened them (caught by a test).
 constexpr double kReliefReadLevel = 1.0;
+constexpr double kAlpineWavelength = 8000.0; // metres: peak-to-peak spacing of real ranges
+// Standard deviation of the synthetic mountain relief: a base for any real range plus a share of
+// the measured relief, capped. A purely proportional rule over-steepened broad ranges (Alps: 46 %
+// of the area above 30 degrees) while leaving narrow ones tame (Tatras: 7 %).
+constexpr double kAlpineBaseStd = 250.0;
+constexpr double kAlpineReliefGain = 0.45;
+constexpr double kAlpineMaxStd = 1000.0;
 
 double smoothstep(double edge0, double edge1, double x) {
     const double t = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
@@ -62,21 +69,26 @@ double EarthTerrain::elevation(const Vec3d& dir, double sampleSpacing) const {
     const double relief =
         relief_.sample(latitude, longitude, std::max(level, kReliefReadLevel));
     const double mountains = smoothstep(80.0, 400.0, relief);
-    const double roughness = 25.0 + 0.04 * height + 0.25 * relief;
+    const double roughness = 20.0 + 0.03 * height + 0.15 * relief;
 
-    // Ridged crests and valleys, as strong as the measured relief suggests. Centred around zero
-    // (minus the typical ridged value) so valleys get deeper as well as peaks higher.
+    // Mountain relief at the scale the data cannot show: individual peaks and valleys a few km
+    // apart, as tall as the measured relief suggests. Eroded noise gives long clean flanks,
+    // sharp crests and flat valley floors; soft ridged noise adds continuous crest lines.
+    // Zero-mean, so valleys get deeper as much as peaks get higher.
+    // (Measured target: high Alps ~25% of the area steeper than 30 degrees.)
     double alpine = 0.0;
     if (mountains > 0.0) {
-        const double ridgeBase = base * 2.0;
-        const double amplitude = std::min(600.0 + 1.2 * relief, 2400.0);
-        // Rounded crests: at Earth's moderate amplitudes razor-sharp ones read as kilometre-wide
-        // "disks" in the lighting rather than as ridges (found by isolating the terms).
-        alpine = (ridgedFbm(alpine_, dir * ridgeBase,
-                            {.octaves = 9, .lacunarity = 2.0, .gain = 0.5, .crestSoftness = 0.15},
-                            maxFrequencyOnSphere / ridgeBase) -
-                  0.25) *
-                 amplitude * mountains;
+        const double alpineBase = kMeanRadius / kAlpineWavelength;
+        const double maxAlpine = maxFrequencyOnSphere / alpineBase;
+        const double eroded = erodedFbm(alpine_, dir, alpineBase, kErodedParams, 1.0, maxAlpine);
+        const double crests =
+            ridgedFbm(alpine_, dir * (alpineBase * 0.5), kCrestParams, maxAlpine * 2.0);
+        // Both layers normalised to mean 0, standard deviation 1, so `std` below is literally
+        // the standard deviation of the synthetic relief (constants verified by a test).
+        const double layers = 0.8 * (eroded - kErodedMean) / kErodedStd +
+                              0.6 * (crests - kCrestMean) / kCrestStd;
+        const double std = std::min(kAlpineBaseStd + kAlpineReliefGain * relief, kAlpineMaxStd);
+        alpine = layers * std * mountains;
     }
 
     const double result = measured + landFactor * (detail * roughness + alpine);

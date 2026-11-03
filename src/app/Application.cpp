@@ -105,11 +105,18 @@ Application::Application(const AppOptions& options)
     drawSettings_.showLodLevels = options.showLodLevels;
 
     const AppOptions::View& v = options_.view;
-    camera_.setPosition({v.latitude * kDegToRad, v.longitude * kDegToRad, v.altitudeKm * 1000.0});
+    double altitude = v.altitudeKm * 1000.0;
+    if (options.viewAboveGround) {
+        altitude += groundHeightAt(ellipsoid_.geodeticToEcef(
+            {v.latitude * kDegToRad, v.longitude * kDegToRad, 0.0}));
+    }
+    camera_.setPosition({v.latitude * kDegToRad, v.longitude * kDegToRad, altitude});
     camera_.setOrientation(v.heading * kDegToRad, v.pitch * kDegToRad);
 
     showUi_ = options.showUi;
+    camera_.verticalFov = static_cast<float>(options.fovDegrees * kDegToRad);
     drawSettings_.geomorph = options.geomorph;
+    drawSettings_.shadows = options.shadows;
     sunAzimuth_ = options.sunAzimuth;
     sunElevation_ = options.sunElevation;
     setSun(v.latitude * kDegToRad, v.longitude * kDegToRad);
@@ -307,6 +314,22 @@ void Application::handleInput(double dt) {
     }
 }
 
+double Application::groundHeightAt(const Vec3d& ecef) const {
+    // Same sampling as the mesh: terrain is indexed by direction from the centre. (The geocentric
+    // and geodetic verticals differ by < 0.2 degrees: metres at these heights.)
+    return std::max(elevation_->elevation(normalize(ecef), 1.0), 0.0);
+}
+
+void Application::clampCameraToGround() {
+    constexpr double kClearance = 2.0; // metres above the ground
+    Geodetic g = ellipsoid_.ecefToGeodetic(camera_.position());
+    const double minimum = groundHeightAt(camera_.position()) + kClearance;
+    if (g.height < minimum) {
+        g.height = minimum;
+        camera_.setPosition(g);
+    }
+}
+
 void Application::settleTerrain() {
     // Let the LOD stream in until the image is final (or give up after a minute), so CI
     // screenshots are deterministic rather than "whatever had loaded so far".
@@ -319,6 +342,7 @@ void Application::settleTerrain() {
 }
 
 void Application::updateTerrain(std::size_t maxUploads) {
+    clampCameraToGround(); // every path that moves the camera ends up here once per frame
     int width = 0;
     int height = 0;
     window_.framebufferSize(width, height);
@@ -339,16 +363,26 @@ void Application::renderFrame() {
         }
         return; // minimised
     }
+    const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    if (drawSettings_.shadows) {
+        shadows_.render(camera_, aspect, drawSettings_.sunDirection, terrain_,
+                        drawSettings_.geomorph, groundHeightAt(camera_.position()));
+    }
+
     renderTarget_.resize(width, height);
     renderTarget_.bind();
 
+    // Each pass sets the GL state it relies on instead of trusting the previous pass to have
+    // restored it: the shadow pass clears depth to 1 (standard depth), this one needs 0
+    // (reversed-Z). Forgetting this once made the whole terrain fail the depth test.
     glClearColor(0.004f, 0.006f, 0.014f, 1.0f);
+    glClearDepth(0.0);
+    glDepthFunc(GL_GREATER);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    const float aspect = static_cast<float>(width) / static_cast<float>(height);
     atmosphere_.bind();
     sky_.draw(camera_, aspect, drawSettings_.sunDirection, drawSettings_.sunIlluminance);
-    terrain_.draw(camera_, aspect, drawSettings_);
+    terrain_.draw(camera_, aspect, drawSettings_, drawSettings_.shadows ? &shadows_ : nullptr);
     if (uiFrameActive_) {
         ui_.render(); // into our framebuffer, so screenshots include it
         uiFrameActive_ = false;

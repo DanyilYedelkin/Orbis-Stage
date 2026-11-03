@@ -1,6 +1,7 @@
 #include "app/Terrain.hpp"
 
 #include "EmbeddedShaders.hpp"
+#include "app/ShadowCascades.hpp"
 #include "app/gl/ShaderSource.hpp"
 
 #include <algorithm>
@@ -34,6 +35,7 @@ Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
           ChunkBuilder::defaultThreadCount()) {
     shader_.set("uTransmittanceLut", 0);
     shader_.set("uMultiScatteringLut", 1);
+    shader_.set("uShadowMap", 2);
     const std::vector<std::uint16_t> indices = buildChunkIndices(settings.quadsPerEdge);
     indexCount_ = static_cast<GLsizei>(indices.size());
     trianglesPerChunk_ = indices.size() / 3;
@@ -158,7 +160,46 @@ void Terrain::evict() {
 
 bool Terrain::settled() const { return lastSelectionComplete_ && builder_.idle(); }
 
-void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings& settings) const {
+void Terrain::drawChunks(const gl::ShaderProgram& program, const Vec3d& viewOrigin,
+                         bool withDebugLevel) const {
+    for (const NodeKey& key : drawList_) {
+        const auto it = chunks_.find(key);
+        if (it == chunks_.end()) {
+            continue;
+        }
+        const GpuChunk& chunk = it->second;
+        // THE key line of camera-relative rendering: the big numbers cancel out in double
+        // precision on the CPU, and the GPU only ever sees the small difference.
+        program.set("uChunkOffset", Vec3f(chunk.origin - viewOrigin));
+        program.set("uLodOffset", Vec3f(chunk.origin - lodCameraPosition_));
+        if (withDebugLevel) {
+            program.set("uLodLevel", static_cast<int>(chunk.level));
+        }
+
+        // Morph window. The PARENT was split when its vertex spacing projected to more than
+        // maxPixelError pixels, i.e. closer than D = parentSpacing * pixelsPerRadian / error.
+        // So this chunk only exists closer than ~D: at D it must look exactly like the parent
+        // (morph = 1), and by D/2 - where it splits into its own children - it must show its
+        // own surface (morph = 0), so its children can in turn start from it. A narrow window
+        // near D keeps most of the band at full detail (a wide one blurs the image by about
+        // half a level); ending below D keeps borders next to coarser neighbours crack-free.
+        if (chunk.level == 0) {
+            program.set("uMorphRange", 1e30f, 2e30f); // roots have no parent
+        } else {
+            const NodeKey probe{CubeFace::PosX, chunk.level, 0, 0};
+            const double parentSpacing = 2.0 * lod_.vertexSpacing(probe);
+            const double d = parentSpacing * pixelsPerRadian_ / lod_.settings().maxPixelError;
+            program.set("uMorphRange", static_cast<float>(0.70 * d), static_cast<float>(0.98 * d));
+        }
+
+        glBindVertexArray(chunk.vao.get());
+        glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_SHORT, nullptr);
+    }
+    glBindVertexArray(0);
+}
+
+void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings& settings,
+                   const ShadowCascades* shadows) const {
     const Vec3d& cameraPos = camera.position();
     const Mat4f viewProjection = camera.projectionMatrix(aspect) * camera.viewRotationMatrix();
 
@@ -171,42 +212,44 @@ void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings
     shader_.set("uMorphEnabled", settings.geomorph ? 1 : 0);
     shader_.set("uSunIlluminance", settings.sunIlluminance);
 
-    glPolygonMode(GL_FRONT_AND_BACK, settings.wireframe ? GL_LINE : GL_FILL);
-
-    for (const NodeKey& key : drawList_) {
-        const auto it = chunks_.find(key);
-        if (it == chunks_.end()) {
-            continue;
+    shader_.set("uShadowsEnabled", shadows != nullptr ? 1 : 0);
+    if (shadows != nullptr) {
+        shadows->bind();
+        const char* matrixNames[] = {"uLightMatrices[0]", "uLightMatrices[1]", "uLightMatrices[2]"};
+        for (int c = 0; c < ShadowCascades::kCascades; ++c) {
+            shader_.set(matrixNames[c], shadows->lightMatrices()[static_cast<std::size_t>(c)]);
         }
-        const GpuChunk& chunk = it->second;
-        // THE key line of camera-relative rendering: the big numbers cancel out in double
-        // precision on the CPU, and the GPU only ever sees the small difference.
-        shader_.set("uChunkOffset", Vec3f(chunk.origin - cameraPos));
-        shader_.set("uLodOffset", Vec3f(chunk.origin - lodCameraPosition_));
-        shader_.set("uLodLevel", static_cast<int>(chunk.level));
-
-        // Morph window. The PARENT was split when its vertex spacing projected to more than
-        // maxPixelError pixels, i.e. closer than D = parentSpacing * pixelsPerRadian / error.
-        // So this chunk only exists closer than ~D: at D it must look exactly like the parent
-        // (morph = 1), and by D/2 - where it splits into its own children - it must show its
-        // own surface (morph = 0), so its children can in turn start from it. A narrow window
-        // near D keeps most of the band at full detail (a wide one blurs the image by about
-        // half a level); ending below D keeps borders next to coarser neighbours crack-free.
-        if (chunk.level == 0) {
-            shader_.set("uMorphRange", 1e30f, 2e30f); // roots have no parent
-        } else {
-            const NodeKey probe{CubeFace::PosX, chunk.level, 0, 0};
-            const double parentSpacing = 2.0 * lod_.vertexSpacing(probe);
-            const double d = parentSpacing * pixelsPerRadian_ / lod_.settings().maxPixelError;
-            shader_.set("uMorphRange", static_cast<float>(0.70 * d), static_cast<float>(0.98 * d));
-        }
-
-        glBindVertexArray(chunk.vao.get());
-        glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_SHORT, nullptr);
+        const auto& sp = shadows->splits();
+        const auto& tx = shadows->texelSizes();
+        shader_.set("uCascadeSplits", Vec3f{sp[0], sp[1], sp[2]});
+        shader_.set("uShadowTexel", Vec3f{tx[0], tx[1], tx[2]});
     }
 
-    glBindVertexArray(0);
+    glPolygonMode(GL_FRONT_AND_BACK, settings.wireframe ? GL_LINE : GL_FILL);
+    drawChunks(shader_, cameraPos, true);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+}
+
+void Terrain::drawDepth(const gl::ShaderProgram& program, const Camera& camera,
+                        const Mat4f& viewProjection, bool geomorph) const {
+    program.use();
+    program.set("uViewProjection", viewProjection);
+    program.set("uMorphEnabled", geomorph ? 1 : 0);
+
+    // Standard depth for the shadow map (the main pass uses reversed-Z with GL_GREATER).
+    // No back-face culling: a heightfield seen from the sun has no "inside" to hide.
+    // Slope-scaled polygon offset pushes the stored depth slightly away from the sun, so
+    // surfaces do not shadow themselves ("shadow acne").
+    glDepthFunc(GL_LESS);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(2.0f, 4.0f);
+
+    drawChunks(program, camera.position(), false);
+
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glEnable(GL_CULL_FACE);
+    glDepthFunc(GL_GREATER);
 }
 
 } // namespace orbis

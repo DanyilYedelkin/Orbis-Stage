@@ -44,7 +44,9 @@ public:
     Mat4f viewRotationMatrix() const;
     Mat4f projectionMatrix(float aspect) const;
 
-    float verticalFov = 1.0471976f; ///< 60 degrees.
+    /// 45 degrees: close to how big things look to the eye. 60+ is a wide-angle lens that
+    /// visibly shrinks and pushes back distant mountains.
+    float verticalFov = 0.7853982f;
     float nearPlane = 0.5f;         ///< Metres. Reversed-Z allows a tiny near plane.
     double minAltitude = 10.0;      ///< Metres above the ellipsoid.
 

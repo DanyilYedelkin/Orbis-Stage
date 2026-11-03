@@ -77,6 +77,10 @@ void Application::buildDebugPanel(double dt) {
                     camera_.pitch() / kDeg);
         sliderDouble("speed", speedMultiplier_, 0.001f, 50.0f, "x%.3f",
                      ImGuiSliderFlags_Logarithmic);
+        float fovDegrees = camera_.verticalFov / static_cast<float>(kDeg);
+        if (ImGui::SliderFloat("field of view", &fovDegrees, 15.0f, 90.0f, "%.0f deg")) {
+            camera_.verticalFov = fovDegrees * static_cast<float>(kDeg);
+        }
 
         ImGui::TextDisabled("Go to:");
         const bool earth = isEarth_;
@@ -128,6 +132,7 @@ void Application::buildDebugPanel(double dt) {
         bool changed = sliderDouble("azimuth", sunAzimuth_, 0.0f, 360.0f, "%.0f deg");
         changed |= sliderDouble("elevation", sunElevation_, -10.0f, 90.0f, "%.0f deg");
         ImGui::SliderFloat("intensity", &drawSettings_.sunIlluminance, 1.0f, 20.0f, "%.1f");
+        ImGui::Checkbox("shadows", &drawSettings_.shadows);
         if (changed) {
             // Relative to where the camera is NOW: "sun in the south-west at 20 degrees" means
             // the same thing anywhere on the planet.

@@ -6,7 +6,7 @@ namespace orbis {
 
 /// Upper bound of terrain elevation for EVERY source, in metres. Bounding volumes are built from
 /// it before any mesh exists, so each source has a unit test proving it never exceeds it.
-inline constexpr double kMaxTerrainElevation = 11000.0;
+inline constexpr double kMaxTerrainElevation = 12000.0;
 
 /// Anything that can answer "how high is the ground in this direction?".
 ///

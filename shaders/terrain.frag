@@ -7,6 +7,37 @@ in VsOut {
 uniform vec3 uSunDirection; // unit, towards the sun
 uniform vec3 uPlanetCenter; // planet centre relative to the camera, metres
 uniform float uSunIlluminance;
+
+uniform sampler2DArrayShadow uShadowMap;
+uniform mat4 uLightMatrices[3]; // camera-relative -> light clip space, per cascade
+uniform vec3 uCascadeSplits;    // far distance of each cascade, metres
+uniform vec3 uShadowTexel;      // world size of one shadow texel, per cascade
+uniform int uShadowsEnabled;
+
+// Fraction of the sun visible from this point (0 = in a mountain's shadow, 1 = lit).
+float sunVisibility(vec3 cameraRelative, vec3 normal, float viewDistance) {
+    if (uShadowsEnabled == 0 || viewDistance >= uCascadeSplits.z) {
+        return 1.0;
+    }
+    int c = viewDistance < uCascadeSplits.x ? 0 : (viewDistance < uCascadeSplits.y ? 1 : 2);
+    // Normal offset: look the shadow up slightly off the surface (scaled to the texel size of
+    // this cascade), which removes self-shadowing without detaching shadows from their casters.
+    vec4 light = uLightMatrices[c] * vec4(cameraRelative + normal * (uShadowTexel[c] * 1.5), 1.0);
+    vec3 uvz = vec3(light.xy * 0.5 + 0.5, light.z);
+    if (any(lessThan(uvz.xy, vec2(0.0))) || any(greaterThan(uvz.xy, vec2(1.0)))) {
+        return 1.0;
+    }
+    // 4-tap rotated grid; each tap is already a bilinear 2x2 comparison in hardware.
+    const vec2 taps[4] = vec2[](vec2(-0.6, -1.4), vec2(1.4, -0.6), vec2(0.6, 1.4), vec2(-1.4, 0.6));
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
+    float lit = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        lit += texture(uShadowMap, vec4(uvz.xy + taps[i] * texel, float(c), uvz.z));
+    }
+    lit *= 0.25;
+    // Fade out at the far end of the last cascade instead of a visible edge.
+    return mix(lit, 1.0, smoothstep(uCascadeSplits.z * 0.8, uCascadeSplits.z, viewDistance));
+}
 uniform int uWireframe;
 uniform int uShowLodLevels; // debug: tint by quadtree level
 uniform int uLodLevel;
@@ -93,7 +124,8 @@ void main() {
     // Sunlight that actually reaches this point: dimmed and reddened by the air above it, and
     // zero in the planet's shadow. Mountain tops keep the light after the valleys lose it.
     vec3 sunlight = uSunIlluminance * sunTransmittance(r, muSun);
-    vec3 color = albedo / kPi * sunlight * nDotL;
+    float visibility = sunVisibility(fsIn.cameraRelative, n, length(fsIn.cameraRelative));
+    vec3 color = albedo / kPi * sunlight * nDotL * visibility;
 
     // Skylight (simplified: a blue ambient that fades through twilight). A proper sky irradiance
     // LUT is a possible next step.
@@ -103,7 +135,7 @@ void main() {
     // Sun glint on water (Blinn-Phong).
     if (fsIn.elevation < 0.0) {
         vec3 halfVector = normalize(uSunDirection + toCamera);
-        color += sunlight * pow(max(dot(n, halfVector), 0.0), 600.0) * 0.5 * nDotL;
+        color += sunlight * pow(max(dot(n, halfVector), 0.0), 600.0) * 0.5 * nDotL * visibility;
     }
 
     // ---- Aerial perspective: the air between the eye and the surface dims it (transmittance)

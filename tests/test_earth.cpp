@@ -7,6 +7,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "core/terrain/Noise.hpp"
+
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +17,7 @@
 
 using namespace orbis;
 using Catch::Matchers::WithinAbs;
+using Catch::Matchers::WithinRel;
 
 namespace {
 constexpr double kPi = std::numbers::pi;
@@ -216,4 +219,53 @@ TEST_CASE("synthetic detail never turns measured land into sea", "[earth]") {
             }
         }
     }
+}
+
+TEST_CASE("synthetic mountain layers are normalised as declared", "[earth][noise]") {
+    // EarthTerrain divides by these constants; if the noise parameters change, they must too.
+    const PerlinNoise noise(20261102ull ^ 0x5DEECE66DF00D123ull);
+    std::mt19937_64 rng(1);
+    std::normal_distribution<double> gauss;
+    const double base = 6371000.0 / 8000.0;
+    double sumE = 0, sumE2 = 0, sumC = 0, sumC2 = 0;
+    constexpr int n = 20000;
+    for (int i = 0; i < n; ++i) {
+        const Vec3d d = normalize(Vec3d{gauss(rng), gauss(rng), gauss(rng)});
+        const double e = erodedFbm(noise, d, base, kErodedParams, 1.0);
+        const double c = ridgedFbm(noise, d * (base * 0.5), kCrestParams);
+        sumE += e; sumE2 += e * e; sumC += c; sumC2 += c * c;
+    }
+    const double meanE = sumE / n, meanC = sumC / n;
+    CHECK_THAT(meanE, WithinAbs(kErodedMean, 0.01));
+    CHECK_THAT(std::sqrt(sumE2 / n - meanE * meanE), WithinRel(kErodedStd, 0.05));
+    CHECK_THAT(meanC, WithinAbs(kCrestMean, 0.01));
+    CHECK_THAT(std::sqrt(sumC2 / n - meanC * meanC), WithinRel(kCrestStd, 0.05));
+}
+
+TEST_CASE("Earth mountains are as steep as real ones, plains stay flat", "[earth]") {
+    // Share of the area steeper than 30 degrees in a 20 km square, sampled every 30 m.
+    // Real high Alps: roughly a quarter. Before the measured redesign this was 0 %.
+    const auto steepShare = [](double lat0, double lon0) {
+        const double mLat = 111320.0, mLon = 111320.0 * std::cos(lat0 * kDeg);
+        const double step = 30.0;
+        int steep = 0, total = 0;
+        for (int j = 0; j < 220; j += 2) {
+            for (int i = 0; i < 220; i += 2) {
+                const double la = lat0 + j * step * 3 / mLat, lo = lon0 + i * step * 3 / mLon;
+                const auto h = [&](double a, double b) {
+                    return std::max(earth().elevation(directionAt(a, b)), 0.0);
+                };
+                const double h0 = h(la, lo);
+                const double slope = std::hypot(h(la, lo + step / mLon) - h0,
+                                                h(la + step / mLat, lo) - h0) / step;
+                steep += slope > std::tan(30.0 * kDeg) ? 1 : 0;
+                ++total;
+            }
+        }
+        return 100.0 * steep / total;
+    };
+    const double alps = steepShare(45.9, 7.5);
+    CHECK(alps > 12.0);
+    CHECK(alps < 45.0);
+    CHECK(steepShare(52.2, 5.0) < 0.5); // Netherlands
 }

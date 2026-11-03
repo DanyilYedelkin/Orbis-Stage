@@ -6,6 +6,7 @@ add_executable(orbis
     Sky.cpp
     DataFiles.cpp
     Atmosphere.cpp
+    ShadowCascades.cpp
     DebugUi.cpp
     ApplicationUi.cpp
     gl/ShaderProgram.cpp
@@ -20,7 +21,8 @@ orbis_embed_shaders(orbis
     "${PROJECT_SOURCE_DIR}/shaders/terrain.vert"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.frag"
     "${PROJECT_SOURCE_DIR}/shaders/sky.vert"
-    "${PROJECT_SOURCE_DIR}/shaders/sky.frag")
+    "${PROJECT_SOURCE_DIR}/shaders/sky.frag"
+    "${PROJECT_SOURCE_DIR}/shaders/shadow.frag")
 
 target_link_libraries(orbis PRIVATE orbis::core glad glfw imgui)
 # GLFW must not pull in its own GL header: glad provides the declarations.
