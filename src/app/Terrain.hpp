@@ -19,6 +19,7 @@ struct TerrainDrawSettings {
     Vec3d sunDirection{1.0, 0.0, 0.0}; ///< Unit vector towards the sun, ECEF.
     bool wireframe = false;
     bool showLodLevels = false; ///< Debug: tint every chunk by its quadtree level.
+    bool geomorph = true;       ///< Smooth LOD transitions (off = classic popping, for comparison).
 };
 
 struct TerrainStats {
@@ -80,6 +81,8 @@ private:
     std::vector<NodeKey> drawList_;
     std::uint64_t frame_ = 0;
     bool lastSelectionComplete_ = false;
+    Vec3d lodCameraPosition_;     ///< Camera the LOD was selected for (differs when frozen).
+    double pixelsPerRadian_ = 1.0;
     TerrainStats stats_;
 
     // Last member: destroyed first, so worker threads are joined before anything they could

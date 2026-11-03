@@ -50,14 +50,18 @@ void Terrain::upload(const NodeKey& key, const ChunkMesh& mesh) {
     glVertexArrayVertexBuffer(vao, 0, chunk.vertices.get(), 0, sizeof(TerrainVertex));
     glVertexArrayElementBuffer(vao, indexBuffer_.get());
 
-    const auto attribute = [vao](GLuint index, GLint components, GLuint offset) {
+    const auto attribute = [vao](GLuint index, GLint components, GLenum type, GLboolean normalized,
+                                 GLuint offset) {
         glEnableVertexArrayAttrib(vao, index);
-        glVertexArrayAttribFormat(vao, index, components, GL_FLOAT, GL_FALSE, offset);
+        glVertexArrayAttribFormat(vao, index, components, type, normalized, offset);
         glVertexArrayAttribBinding(vao, index, 0);
     };
-    attribute(0, 3, offsetof(TerrainVertex, position));
-    attribute(1, 3, offsetof(TerrainVertex, normal));
-    attribute(2, 1, offsetof(TerrainVertex, elevation));
+    attribute(0, 3, GL_FLOAT, GL_FALSE, offsetof(TerrainVertex, position));
+    attribute(1, 3, GL_FLOAT, GL_FALSE, offsetof(TerrainVertex, morphDelta));
+    // Packed normals: the GPU unpacks 10:10:10:2 signed-normalised integers for free.
+    attribute(2, 4, GL_INT_2_10_10_10_REV, GL_TRUE, offsetof(TerrainVertex, normal));
+    attribute(3, 4, GL_INT_2_10_10_10_REV, GL_TRUE, offsetof(TerrainVertex, morphNormal));
+    attribute(4, 2, GL_FLOAT, GL_FALSE, offsetof(TerrainVertex, elevation)); // + morphElevation
 
     chunks_.insert_or_assign(key, std::move(chunk));
 }
@@ -81,6 +85,8 @@ void Terrain::update(const Camera& lodCamera, int viewportWidth, int viewportHei
         .pixelsPerRadian = viewportHeight / (2.0 * std::tan(fov / 2.0)),
         .occluder = ellipsoid_,
     };
+    lodCameraPosition_ = view.cameraPosition;
+    pixelsPerRadian_ = view.pixelsPerRadian;
     LodSelection selection = lod_.select(view, [this](const NodeKey& key) {
         const auto it = chunks_.find(key);
         return it != chunks_.end() ? std::optional(it->second.heights) : std::nullopt;
@@ -157,6 +163,7 @@ void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings
     shader_.set("uPlanetCenter", Vec3f(-cameraPos)); // only used as a direction, float is fine
     shader_.set("uWireframe", settings.wireframe ? 1 : 0);
     shader_.set("uShowLodLevels", settings.showLodLevels ? 1 : 0);
+    shader_.set("uMorphEnabled", settings.geomorph ? 1 : 0);
 
     glPolygonMode(GL_FRONT_AND_BACK, settings.wireframe ? GL_LINE : GL_FILL);
 
@@ -169,7 +176,24 @@ void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings
         // THE key line of camera-relative rendering: the big numbers cancel out in double
         // precision on the CPU, and the GPU only ever sees the small difference.
         shader_.set("uChunkOffset", Vec3f(chunk.origin - cameraPos));
+        shader_.set("uLodOffset", Vec3f(chunk.origin - lodCameraPosition_));
         shader_.set("uLodLevel", static_cast<int>(chunk.level));
+
+        // Morph window. The PARENT was split when its vertex spacing projected to more than
+        // maxPixelError pixels, i.e. closer than D = parentSpacing * pixelsPerRadian / error.
+        // So this chunk only exists closer than ~D: at D it must look exactly like the parent
+        // (morph = 1), and by D/2 - where it splits into its own children - it must show its
+        // own surface (morph = 0), so its children can in turn start from it. A narrow window
+        // near D keeps most of the band at full detail (a wide one blurs the image by about
+        // half a level); ending below D keeps borders next to coarser neighbours crack-free.
+        if (chunk.level == 0) {
+            shader_.set("uMorphRange", 1e30f, 2e30f); // roots have no parent
+        } else {
+            const NodeKey probe{CubeFace::PosX, chunk.level, 0, 0};
+            const double parentSpacing = 2.0 * lod_.vertexSpacing(probe);
+            const double d = parentSpacing * pixelsPerRadian_ / lod_.settings().maxPixelError;
+            shader_.set("uMorphRange", static_cast<float>(0.70 * d), static_cast<float>(0.98 * d));
+        }
 
         glBindVertexArray(chunk.vao.get());
         glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_SHORT, nullptr);

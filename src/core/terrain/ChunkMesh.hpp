@@ -19,14 +19,27 @@ struct FaceRegion {
     double size = 2.0;
 };
 
-/// Exactly what the GPU receives per vertex: 7 floats, 28 bytes.
+/// Exactly what the GPU receives per vertex: 40 bytes.
+///
+/// Every vertex carries TWO states for geomorphing (smooth LOD transitions): its own, and where
+/// it would be on the PARENT's coarser surface. The vertex shader blends between them by
+/// distance, so a chunk that just replaced its parent looks exactly like the parent and only
+/// grows its own detail as the camera approaches - no "pop".
 struct TerrainVertex {
-    Vec3f position;  ///< Metres, relative to ChunkMesh::origin - SMALL numbers, float-safe.
-    Vec3f normal;    ///< Unit, ECEF-aligned.
-    float elevation; ///< Metres, unclamped (negative = ocean floor), used for colouring.
+    Vec3f position;            ///< Metres, relative to ChunkMesh::origin - SMALL numbers, float-safe.
+    Vec3f morphDelta;          ///< Parent-surface position minus `position`.
+    std::uint32_t normal;      ///< Unit normal (ECEF-aligned), packed snorm 10:10:10:2.
+    std::uint32_t morphNormal; ///< Normal of the parent surface at this point, packed.
+    float elevation;           ///< Metres, unclamped (negative = ocean floor), for colouring.
+    float morphElevation;      ///< The parent's elevation at this point.
 };
-static_assert(sizeof(TerrainVertex) == 7 * sizeof(float), "unexpected padding");
+static_assert(sizeof(TerrainVertex) == 40, "unexpected padding");
 static_assert(std::is_standard_layout_v<TerrainVertex>, "offsetof() must be valid");
+
+/// Unit vector -> GL_INT_2_10_10_10_REV (normalised). 10 bits per axis is ~0.1 degree: plenty for
+/// shading, and 4 bytes instead of 12.
+std::uint32_t packNormal(const Vec3d& n);
+Vec3f unpackNormal(std::uint32_t packed);
 
 /// CPU-side mesh of one chunk. Pure data: no OpenGL here, so it is unit-testable and is built on
 /// worker threads.
@@ -39,8 +52,8 @@ struct ChunkMesh {
     FaceRegion region;
     Vec3d origin;                ///< ECEF anchor all vertex positions are relative to.
     double boundingRadius = 0.0; ///< Sphere around origin containing every SURFACE vertex.
-    double minHeight = 0.0;      ///< Lowest surface vertex above the ellipsoid (geometry, >= 0).
-    double maxHeight = 0.0;      ///< Highest surface vertex above the ellipsoid.
+    double minHeight = 0.0;      ///< Lowest surface point (own or morph target), metres, >= 0.
+    double maxHeight = 0.0;      ///< Highest surface point (own or morph target).
     std::vector<TerrainVertex> vertices;
 };
 
@@ -68,7 +81,9 @@ constexpr int chunkSkirtIndexCount(int n) { return 4 * n * 6; }
 /// as seen from outside the planet: bottom edge (+u), right edge (+v), top edge (-u), left (-v).
 int boundaryGridIndex(int k, int quadsPerEdge);
 
-inline constexpr int kMaxQuadsPerEdge = 250; ///< Keeps grid + skirt within 16-bit indices.
+/// Must be EVEN: every second vertex of a child then coincides with a parent vertex, which is
+/// what geomorphing relies on. 250 keeps grid + skirt within 16-bit indices.
+inline constexpr int kMaxQuadsPerEdge = 250;
 static_assert(chunkVertexCount(kMaxQuadsPerEdge) <= 65536);
 
 } // namespace orbis

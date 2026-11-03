@@ -78,8 +78,9 @@ std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& opt
 } // namespace
 
 Application::Application(const AppOptions& options)
-    : options_(options), window_(makeWindowConfig(options)),
+    : options_(options), window_(makeWindowConfig(options)), ui_(window_.handle()),
       elevation_(makeElevationSource(options, ellipsoid_)),
+      isEarth_(dynamic_cast<const EarthTerrain*>(elevation_.get()) != nullptr),
       terrain_(ellipsoid_, *elevation_, LodSettings{}) {
     gl::enableDebugOutput();
 
@@ -102,36 +103,91 @@ Application::Application(const AppOptions& options)
     camera_.setPosition({v.latitude * kDegToRad, v.longitude * kDegToRad, v.altitudeKm * 1000.0});
     camera_.setOrientation(v.heading * kDegToRad, v.pitch * kDegToRad);
 
-    // Sun defined in the local frame of the starting point, so every --view starts in daylight.
-    const EnuFrame enu = Ellipsoid::enuFrame(v.latitude * kDegToRad, v.longitude * kDegToRad);
-    const double az = options.sunAzimuth * kDegToRad;
-    const double el = options.sunElevation * kDegToRad;
+    showUi_ = options.showUi;
+    drawSettings_.geomorph = options.geomorph;
+    sunAzimuth_ = options.sunAzimuth;
+    sunElevation_ = options.sunElevation;
+    setSun(v.latitude * kDegToRad, v.longitude * kDegToRad);
+}
+
+void Application::setSun(double latitude, double longitude) {
+    // Sun given in the LOCAL frame (azimuth from north, elevation above the horizon), converted
+    // to a world (ECEF) direction - so "afternoon light from the south-west" works anywhere.
+    const EnuFrame enu = Ellipsoid::enuFrame(latitude, longitude);
+    const double az = sunAzimuth_ * kDegToRad;
+    const double el = sunElevation_ * kDegToRad;
     drawSettings_.sunDirection =
         normalize((enu.north * std::cos(az) + enu.east * std::sin(az)) * std::cos(el) +
                   enu.up * std::sin(el));
 }
 
+void Application::goTo(const AppOptions::View& view, double sunAzimuth, double sunElevation) {
+    camera_.setPosition({view.latitude * kDegToRad, view.longitude * kDegToRad,
+                         view.altitudeKm * 1000.0});
+    camera_.setOrientation(view.heading * kDegToRad, view.pitch * kDegToRad);
+    sunAzimuth_ = sunAzimuth;
+    sunElevation_ = sunElevation;
+    setSun(view.latitude * kDegToRad, view.longitude * kDegToRad);
+    frozenLodCamera_.reset();
+}
+
+void Application::toggleFreeze() {
+    if (frozenLodCamera_) {
+        frozenLodCamera_.reset();
+    } else {
+        frozenLodCamera_ = camera_;
+    }
+}
+
 int Application::run() {
     if (options_.screenshotPath) {
-        // Let the LOD stream in until the image is final (or give up after a minute), so CI
-        // screenshots are deterministic rather than "whatever had loaded so far".
-        const auto start = std::chrono::steady_clock::now();
-        int iterations = 0;
-        do {
-            updateTerrain(std::numeric_limits<std::size_t>::max());
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            ++iterations;
-        } while (!terrain_.settled() &&
-                 std::chrono::steady_clock::now() - start < std::chrono::seconds(60));
-        const auto ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - start);
+        settleTerrain();
         const TerrainStats& st = terrain_.stats();
-        std::cout << "Settled in " << static_cast<long long>(ms.count()) << " ms, " << iterations
-                  << " updates: " << st.drawnChunks << " chunks drawn (" << st.drawnTriangles
-                  << " triangles), " << st.residentChunks << " resident, deepest level "
-                  << st.deepestLevel << ", culled " << st.frustumCulled << " frustum / "
-                  << st.horizonCulled << " horizon\n";
-        renderFrame();
+        std::cout << st.drawnChunks << " chunks drawn (" << st.drawnTriangles << " triangles), "
+                  << st.residentChunks << " resident, deepest level " << st.deepestLevel
+                  << ", culled " << st.frustumCulled << " frustum / " << st.horizonCulled
+                  << " horizon\n";
+
+        if (options_.recordFrames > 0) {
+            // Fly forward and save every frame, with the LOD fully settled each time: any change
+            // between consecutive frames then comes from motion and LOD transitions only, never
+            // from loading - which is what makes popping measurable.
+            std::string base = *options_.screenshotPath;
+            if (const auto dot = base.rfind('.'); dot != std::string::npos) {
+                base.erase(dot);
+            }
+            for (int frame = 0; frame < options_.recordFrames; ++frame) {
+                if (frame > 0) {
+                    if (options_.recordLodOnly) {
+                        if (!frozenLodCamera_) {
+                            frozenLodCamera_ = camera_;
+                        }
+                        frozenLodCamera_->translate(frozenLodCamera_->basis().forward *
+                                                    options_.recordStep);
+                    } else {
+                        camera_.translate(camera_.basis().forward * options_.recordStep);
+                    }
+                    settleTerrain();
+                }
+                renderFrame();
+                char suffix[16];
+                std::snprintf(suffix, sizeof(suffix), "_%03d.ppm", frame);
+                saveScreenshot(base + suffix);
+            }
+            return 0;
+        }
+
+        if (showUi_) {
+            // ImGui sizes auto-resizing windows over the first frames; let it settle.
+            for (int i = 0; i < 3; ++i) {
+                ui_.beginFrame();
+                uiFrameActive_ = true;
+                buildDebugPanel(1.0 / 60.0);
+                renderFrame();
+            }
+        } else {
+            renderFrame();
+        }
         saveScreenshot(*options_.screenshotPath);
         return 0;
     }
@@ -145,6 +201,11 @@ int Application::run() {
         const double dt = std::min(now - previous, 0.1);
         previous = now;
 
+        if (showUi_) {
+            ui_.beginFrame();
+            uiFrameActive_ = true;
+            buildDebugPanel(dt);
+        }
         handleInput(dt);
         updateTerrain(kUploadsPerFrame);
         renderFrame();
@@ -158,19 +219,26 @@ void Application::handleInput(double dt) {
     GLFWwindow* w = window_.handle();
     const auto down = [w](int key) { return glfwGetKey(w, key) == GLFW_PRESS; };
 
+    // While the panel has the mouse or keyboard (dragging a slider, typing), the camera must
+    // not react to the same input.
+    const bool uiMouse = showUi_ && ui_.wantsMouse();
+    const bool uiKeyboard = showUi_ && ui_.wantsKeyboard();
+    if (uiKeyboard) {
+        return;
+    }
+
     if (down(GLFW_KEY_ESCAPE)) {
         window_.requestClose();
+    }
+    if (uiKey_.pressed(down(GLFW_KEY_F4))) {
+        showUi_ = !showUi_;
     }
 
     if (wireframeKey_.pressed(down(GLFW_KEY_F1))) {
         drawSettings_.wireframe = !drawSettings_.wireframe;
     }
     if (freezeKey_.pressed(down(GLFW_KEY_F2))) {
-        if (frozenLodCamera_) {
-            frozenLodCamera_.reset();
-        } else {
-            frozenLodCamera_ = camera_;
-        }
+        toggleFreeze();
     }
     if (lodColorKey_.pressed(down(GLFW_KEY_F3))) {
         drawSettings_.showLodLevels = !drawSettings_.showLodLevels;
@@ -185,7 +253,9 @@ void Application::handleInput(double dt) {
     }
 
     // Mouse look while the right button is held.
-    const bool rmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    // Start looking only if the click was not on the panel (but keep looking once started).
+    const bool rmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS &&
+                     (looking_ || !uiMouse);
     double cx = 0.0;
     double cy = 0.0;
     glfwGetCursorPos(w, &cx, &cy);
@@ -205,8 +275,10 @@ void Application::handleInput(double dt) {
     }
 
     // Each wheel notch changes speed by 25%: multiplicative feels linear to humans.
-    speedMultiplier_ = std::clamp(speedMultiplier_ * std::pow(1.25, window_.consumeScroll()),
-                                  0.001, 50.0);
+    const double scroll = window_.consumeScroll();
+    if (!uiMouse) {
+        speedMultiplier_ = std::clamp(speedMultiplier_ * std::pow(1.25, scroll), 0.001, 50.0);
+    }
 
     // Speed proportional to altitude: 1 km/s feels right at 1 km, 1000 km/s at 1000 km. With a
     // fixed speed you either crawl in orbit or crash into mountains at ground level.
@@ -230,6 +302,17 @@ void Application::handleInput(double dt) {
     }
 }
 
+void Application::settleTerrain() {
+    // Let the LOD stream in until the image is final (or give up after a minute), so CI
+    // screenshots are deterministic rather than "whatever had loaded so far".
+    const auto start = std::chrono::steady_clock::now();
+    do {
+        updateTerrain(std::numeric_limits<std::size_t>::max());
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while (!terrain_.settled() &&
+             std::chrono::steady_clock::now() - start < std::chrono::seconds(60));
+}
+
 void Application::updateTerrain(std::size_t maxUploads) {
     int width = 0;
     int height = 0;
@@ -245,6 +328,10 @@ void Application::renderFrame() {
     int height = 0;
     window_.framebufferSize(width, height);
     if (width == 0 || height == 0) {
+        if (uiFrameActive_) {
+            ui_.discardFrame();
+            uiFrameActive_ = false;
+        }
         return; // minimised
     }
     renderTarget_.resize(width, height);
@@ -256,6 +343,10 @@ void Application::renderFrame() {
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
     sky_.draw(camera_, aspect, drawSettings_.sunDirection);
     terrain_.draw(camera_, aspect, drawSettings_);
+    if (uiFrameActive_) {
+        ui_.render(); // into our framebuffer, so screenshots include it
+        uiFrameActive_ = false;
+    }
 
     renderTarget_.blitToWindow();
 }
@@ -306,7 +397,9 @@ void Application::saveScreenshot(const std::string& path) const {
         out.write(reinterpret_cast<const char*>(rgb.data() + static_cast<std::size_t>(y) * rowBytes),
                   static_cast<std::streamsize>(rowBytes));
     }
-    std::cout << "Screenshot saved to " << path << '\n';
+    if (options_.recordFrames == 0) {
+        std::cout << "Screenshot saved to " << path << '\n';
+    }
 }
 
 } // namespace orbis

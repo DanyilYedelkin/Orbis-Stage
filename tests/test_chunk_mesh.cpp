@@ -33,6 +33,7 @@ TEST_CASE("index buffer layout: grid then skirt", "[chunk]") {
 TEST_CASE("invalid resolution is rejected", "[chunk]") {
     CHECK_THROWS(buildChunkIndices(0));
     CHECK_THROWS(buildChunkIndices(kMaxQuadsPerEdge + 1));
+    CHECK_THROWS(buildChunkIndices(15)); // odd: children would not align with parent vertices
 }
 
 TEST_CASE("border walk visits every border vertex exactly once", "[chunk]") {
@@ -55,7 +56,7 @@ TEST_CASE("chunk mesh basics", "[chunk]") {
 
     for (std::size_t i = 0; i < static_cast<std::size_t>(chunkGridVertexCount(n)); ++i) {
         const TerrainVertex& v = mesh.vertices[i];
-        REQUIRE_THAT(static_cast<double>(length(v.normal)), WithinAbs(1.0, 1e-5));
+        REQUIRE_THAT(static_cast<double>(length(unpackNormal(v.normal))), WithinAbs(1.0, 3e-3));
         REQUIRE(static_cast<double>(length(v.position)) <= mesh.boundingRadius * 1.000001);
     }
 }
@@ -124,9 +125,13 @@ TEST_CASE("adjacent chunks share identical border vertices and normals", "[chunk
         REQUIRE(distance(worldPos(a, ia), worldPos(b, ib)) <= tolerance);
         const TerrainVertex& va = a.vertices[ia];
         const TerrainVertex& vb = b.vertices[ib];
-        REQUIRE(va.normal.x == vb.normal.x); // computed from the direction alone => bitwise
-        REQUIRE(va.normal.y == vb.normal.y);
-        REQUIRE(va.normal.z == vb.normal.z);
+        REQUIRE(va.normal == vb.normal); // computed from the direction alone => bitwise
+        REQUIRE(va.morphNormal == vb.morphNormal);
+        // While morphing, both sides must move the shared vertex to the same place, or a crack
+        // would open during the transition.
+        const Vec3d ma = worldPos(a, ia) + Vec3d(va.morphDelta);
+        const Vec3d mb = worldPos(b, ib) + Vec3d(vb.morphDelta);
+        REQUIRE(distance(ma, mb) <= 2.0 * tolerance);
     }
 }
 
@@ -149,4 +154,53 @@ TEST_CASE("relative positions keep float precision high", "[chunk][precision]") 
     // The same vertex stored as absolute float ECEF: off by centimetres to decimetres.
     const Vec3d absoluteFloat = Vec3d(Vec3f(exact));
     CHECK(distance(absoluteFloat, exact) > 0.01);
+}
+
+TEST_CASE("normal packing round-trips within 10-bit precision", "[chunk]") {
+    for (const Vec3d& n : {Vec3d{1, 0, 0}, Vec3d{0, -1, 0}, normalize(Vec3d{0.3, -0.5, 0.8}),
+                           normalize(Vec3d{-0.9, 0.1, -0.4})}) {
+        const Vec3d back(unpackNormal(packNormal(n)));
+        REQUIRE(distance(back, n) < 3e-3);
+    }
+}
+
+TEST_CASE("root chunks do not morph", "[chunk][morph]") {
+    const ChunkMesh root = buildChunkMesh({CubeFace::NegX, -1.0, -1.0, 2.0}, 8, kWgs84, kField);
+    for (const TerrainVertex& v : root.vertices) {
+        REQUIRE(lengthSquared(v.morphDelta) == 0.0f);
+        REQUIRE(v.normal == v.morphNormal);
+    }
+}
+
+TEST_CASE("a fully morphed child is exactly its parent", "[chunk][morph]") {
+    // The promise of geomorphing: at morph = 1 the child must coincide with the REAL parent
+    // mesh, otherwise the switch parent -> child would still pop. Build both independently.
+    const int n = 16;
+    const FaceRegion parentRegion{CubeFace::PosZ, -0.5, 0.25, 0.25};
+    const ChunkMesh parent = buildChunkMesh(parentRegion, n, kWgs84, kField);
+
+    for (int dy = 0; dy <= 1; ++dy) {
+        for (int dx = 0; dx <= 1; ++dx) {
+            const double half = parentRegion.size / 2.0;
+            const FaceRegion childRegion{parentRegion.face, parentRegion.uMin + dx * half,
+                                         parentRegion.vMin + dy * half, half};
+            const ChunkMesh child = buildChunkMesh(childRegion, n, kWgs84, kField);
+            const double tolerance =
+                4.0 * parent.boundingRadius * static_cast<double>(std::numeric_limits<float>::epsilon());
+
+            for (int j = 0; j <= n; j += 2) {
+                for (int i = 0; i <= n; i += 2) {
+                    const auto ci = static_cast<std::size_t>(j * (n + 1) + i);
+                    const auto pi = static_cast<std::size_t>((j / 2 + dy * n / 2) * (n + 1) +
+                                                             (i / 2 + dx * n / 2));
+                    const TerrainVertex& cv = child.vertices[ci];
+                    const TerrainVertex& pv = parent.vertices[pi];
+                    const Vec3d morphed = worldPos(child, ci) + Vec3d(cv.morphDelta);
+                    REQUIRE(distance(morphed, worldPos(parent, pi)) <= tolerance);
+                    REQUIRE(cv.morphNormal == pv.normal);
+                    REQUIRE(cv.morphElevation == pv.elevation);
+                }
+            }
+        }
+    }
 }

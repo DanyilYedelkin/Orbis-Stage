@@ -12,9 +12,21 @@ namespace orbis {
 namespace {
 
 void validate(int quadsPerEdge) {
-    if (quadsPerEdge < 1 || quadsPerEdge > kMaxQuadsPerEdge) {
-        throw std::invalid_argument("chunk: quadsPerEdge out of range");
+    if (quadsPerEdge < 2 || quadsPerEdge > kMaxQuadsPerEdge || quadsPerEdge % 2 != 0) {
+        throw std::invalid_argument("chunk: quadsPerEdge must be even and in [2, 250]");
     }
+}
+
+/// Everything known about one surface point.
+struct PointState {
+    Vec3d position;
+    Vec3d normal;
+    double elevation = 0.0;
+};
+
+PointState average(const PointState& a, const PointState& b) {
+    return {(a.position + b.position) * 0.5, normalize(a.normal + b.normal),
+            (a.elevation + b.elevation) * 0.5};
 }
 
 struct SurfaceSample {
@@ -59,6 +71,25 @@ Vec3d surfaceNormalAt(const Vec3d& unitDir, double angularStep, double spacing,
 
 } // namespace
 
+std::uint32_t packNormal(const Vec3d& n) {
+    const auto component = [](double c) {
+        const long q = std::lround(std::clamp(c, -1.0, 1.0) * 511.0);
+        return static_cast<std::uint32_t>(q) & 0x3FFu; // two's complement, 10 bits
+    };
+    return component(n.x) | (component(n.y) << 10) | (component(n.z) << 20);
+}
+
+Vec3f unpackNormal(std::uint32_t packed) {
+    const auto component = [packed](int shift) {
+        int v = static_cast<int>((packed >> shift) & 0x3FFu);
+        if (v >= 512) {
+            v -= 1024; // sign-extend
+        }
+        return std::max(static_cast<float>(v) / 511.0f, -1.0f); // same rule as OpenGL
+    };
+    return {component(0), component(10), component(20)};
+}
+
 double chunkVertexSpacing(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid) {
     // A face spans ~90 degrees (pi/2 rad) over 2 units of u, i.e. ~pi/4 rad per unit.
     return region.size / quadsPerEdge * (std::numbers::pi / 4.0) * ellipsoid.semiMajorAxis();
@@ -92,10 +123,11 @@ ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellip
     validate(quadsPerEdge);
 
     const int n = quadsPerEdge;
-    const int verticesPerEdge = n + 1;
+    const int half = n / 2;
     const double step = region.size / n;
     const double spacing = chunkVertexSpacing(region, n, ellipsoid);
     const double angularStep = 0.5 * step * (std::numbers::pi / 4.0);
+    const bool hasParent = region.size < 2.0; // roots (a whole face) have nothing to morph to
 
     ChunkMesh mesh;
     mesh.region = region;
@@ -106,41 +138,98 @@ ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellip
     const double vCenter = region.vMin + region.size / 2.0;
     mesh.origin = ellipsoid.surfacePointAlong(faceToSphere(region.face, uCenter, vCenter));
 
+    // Exact endpoints on the borders (no accumulated rounding), so neighbouring chunks - and the
+    // parent - produce bit-identical u/v, and therefore identical samples, on shared points.
+    const auto coordinate = [&](double min, int index, int count, double delta) {
+        return index == count ? min + region.size : min + index * delta;
+    };
+
+    // 1. The parent's surface: the parent samples every SECOND point of our grid, at twice our
+    //    spacing (coarser band limit). Computed exactly as the parent's own mesh does it.
+    std::vector<PointState> parent;
+    if (hasParent) {
+        parent.reserve(static_cast<std::size_t>((half + 1) * (half + 1)));
+        for (int j = 0; j <= half; ++j) {
+            const double v = coordinate(region.vMin, j, half, 2.0 * step);
+            for (int i = 0; i <= half; ++i) {
+                const double u = coordinate(region.uMin, i, half, 2.0 * step);
+                const Vec3d dir = faceToSphere(region.face, u, v);
+                const SurfaceSample s = sampleSurface(dir, 2.0 * spacing, ellipsoid, terrain);
+                parent.push_back({s.position,
+                                  surfaceNormalAt(dir, 2.0 * angularStep, 2.0 * spacing, ellipsoid,
+                                                  terrain),
+                                  s.elevation});
+            }
+        }
+    }
+    const auto parentAt = [&](int i, int j) -> const PointState& {
+        return parent[static_cast<std::size_t>(j * (half + 1) + i)];
+    };
+
     mesh.vertices.reserve(static_cast<std::size_t>(chunkVertexCount(n)));
     std::vector<Vec3d> ups; // needed again for the skirt
     ups.reserve(static_cast<std::size_t>(chunkGridVertexCount(n)));
     double maxDistanceSq = 0.0;
     mesh.minHeight = std::numeric_limits<double>::infinity();
     mesh.maxHeight = -std::numeric_limits<double>::infinity();
+    const auto trackHeight = [&](const Vec3d& p) {
+        const double h = std::max(ellipsoid.ecefToGeodetic(p).height, 0.0);
+        mesh.minHeight = std::min(mesh.minHeight, h);
+        mesh.maxHeight = std::max(mesh.maxHeight, h);
+    };
 
-    for (int j = 0; j < verticesPerEdge; ++j) {
-        // Exact endpoints on the borders (no accumulated rounding), so neighbouring chunks
-        // produce the same u/v - and therefore the same vertices - on their shared edge.
-        const double v = (j == n) ? region.vMin + region.size : region.vMin + j * step;
-        for (int i = 0; i < verticesPerEdge; ++i) {
-            const double u = (i == n) ? region.uMin + region.size : region.uMin + i * step;
+    for (int j = 0; j <= n; ++j) {
+        const double v = coordinate(region.vMin, j, n, step);
+        for (int i = 0; i <= n; ++i) {
+            const double u = coordinate(region.uMin, i, n, step);
 
             const Vec3d dir = faceToSphere(region.face, u, v);
             const SurfaceSample s = sampleSurface(dir, spacing, ellipsoid, terrain);
-            const Vec3d normal = surfaceNormalAt(dir, angularStep, spacing, ellipsoid, terrain);
+            const PointState own{s.position,
+                                 surfaceNormalAt(dir, angularStep, spacing, ellipsoid, terrain),
+                                 s.elevation};
 
-            const Vec3d local = s.position - mesh.origin; // subtract in DOUBLE, then narrow
+            // 2. Where this vertex lies on the parent's surface. Even/even vertices ARE parent
+            //    vertices; the others lie on a parent edge or on the diagonal of a parent quad,
+            //    where the parent's triangles interpolate linearly between two vertices. The
+            //    diagonal is (i, j) -> (i+1, j+1), matching the triangulation in
+            //    buildChunkIndices(), so the morph target really is ON the parent's triangles.
+            PointState target = own;
+            if (hasParent) {
+                const int pi = i / 2;
+                const int pj = j / 2;
+                const bool oddI = (i % 2) != 0;
+                const bool oddJ = (j % 2) != 0;
+                if (!oddI && !oddJ) {
+                    target = parentAt(pi, pj);
+                } else if (oddI && !oddJ) {
+                    target = average(parentAt(pi, pj), parentAt(pi + 1, pj));
+                } else if (!oddI && oddJ) {
+                    target = average(parentAt(pi, pj), parentAt(pi, pj + 1));
+                } else {
+                    target = average(parentAt(pi, pj), parentAt(pi + 1, pj + 1));
+                }
+            }
+
+            const Vec3d local = own.position - mesh.origin; // subtract in DOUBLE, then narrow
             maxDistanceSq = std::max(maxDistanceSq, lengthSquared(local));
-            const double height = std::max(s.elevation, 0.0);
-            mesh.minHeight = std::min(mesh.minHeight, height);
-            mesh.maxHeight = std::max(mesh.maxHeight, height);
+            trackHeight(own.position);
+            trackHeight(target.position);
 
             mesh.vertices.push_back({
                 .position = Vec3f(local),
-                .normal = Vec3f(normal),
-                .elevation = static_cast<float>(s.elevation),
+                .morphDelta = Vec3f(target.position - own.position),
+                .normal = packNormal(own.normal),
+                .morphNormal = packNormal(target.normal),
+                .elevation = static_cast<float>(own.elevation),
+                .morphElevation = static_cast<float>(target.elevation),
             });
             ups.push_back(s.up);
         }
     }
 
-    // Skirt: a copy of every border vertex, pushed straight down. Same normal and elevation as
-    // the border vertex, so if a crack exposes it, it is shaded like the terrain next to it.
+    // Skirt: a copy of every border vertex, pushed straight down. Same normal, elevation and
+    // morph delta as the border vertex, so it moves with it and is shaded like the terrain.
     const double depth = chunkSkirtDepth(region, n, ellipsoid);
     for (int k = 0; k < chunkSkirtVertexCount(n); ++k) {
         const auto g = static_cast<std::size_t>(boundaryGridIndex(k, n));

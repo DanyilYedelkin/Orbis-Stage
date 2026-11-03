@@ -16,6 +16,26 @@ if(ORBIS_BUILD_APP)
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SYSTEM)
     FetchContent_MakeAvailable(glfw)
+
+    # Dear ImGui has no CMake build of its own: fetch the sources and compile the core plus the
+    # GLFW and OpenGL 3 backends into a static library.
+    FetchContent_Declare(imgui
+        URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.91.5.tar.gz
+        URL_HASH SHA256=2aa2d169c569368439e5d5667e0796d09ca5cc6432965ce082e516937d7db254
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(imgui)
+    add_library(imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+    target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+    target_compile_definitions(imgui
+        PUBLIC  IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+        PRIVATE GLFW_INCLUDE_NONE) # the OpenGL backend brings its own tiny loader
+    target_link_libraries(imgui PUBLIC glfw)
 endif()
 
 if(ORBIS_BUILD_TESTS)

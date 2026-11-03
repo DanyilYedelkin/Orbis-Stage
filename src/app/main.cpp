@@ -10,16 +10,19 @@ namespace {
 void printUsage() {
     std::cout << "Usage: orbis [--world earth|procedural] [--elevation file.oeg] [--size WxH]\n"
                  "             [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation]\n"
-                 "             [--lod-colors] [--screenshot file.ppm]\n"
+                 "             [--lod-colors] [--no-geomorph]\n"
+                 "             [--screenshot file.ppm [--show-ui] [--record frames,metres]\n"
+                 "             [--record-lod-only]]\n"
                  "Controls: RMB + mouse look | WASD move | Space/E up | Ctrl/Q down |\n"
                  "          Shift boost | wheel speed | [ ] detail | F1 wireframe |\n"
-                 "          F2 freeze LOD | F3 LOD colours | Esc quit\n";
+                 "          F2 freeze LOD | F3 LOD colours | F4 panel | Esc quit\n";
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     orbis::AppOptions options;
+    bool showUiFlag = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -55,6 +58,18 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--elevation" && i + 1 < argc) {
             options.elevationFile = argv[++i];
+        } else if (arg == "--no-geomorph") {
+            options.geomorph = false;
+        } else if (arg == "--record" && i + 1 < argc) {
+            if (std::sscanf(argv[++i], "%d,%lf", &options.recordFrames, &options.recordStep) != 2 ||
+                options.recordFrames <= 0) {
+                std::cerr << "Invalid --record, expected frames,metresPerFrame e.g. 40,500\n";
+                return 1;
+            }
+        } else if (arg == "--record-lod-only") {
+            options.recordLodOnly = true;
+        } else if (arg == "--show-ui") {
+            showUiFlag = true;
         } else if (arg == "--lod-colors") {
             options.showLodLevels = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -66,6 +81,9 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+
+    // The panel is on in interactive use; screenshots are clean unless asked for.
+    options.showUi = !options.screenshotPath || showUiFlag;
 
     try {
         orbis::Application app(options);

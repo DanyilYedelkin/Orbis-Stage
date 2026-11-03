@@ -15,6 +15,8 @@ planetary scale, and streaming terrain generation on worker threads.**
 |---|---|
 | ![Procedural](docs/procedural.png) | ![LOD levels](docs/lod-levels.png) |
 
+![Debug panel](docs/debug-panel.png)
+
 *All frames rendered headless in CI with Mesa's software OpenGL (llvmpipe).*
 
 ## Highlights
@@ -74,6 +76,30 @@ invisible chunks alive.
 chunk has a skirt hanging below its border, wound to face outwards, so a crack shows terrain-coloured
 skirt instead of sky.
 
+**Geomorphing: no popping.** Every vertex also stores where it would lie on its *parent's*
+surface (even vertices are parent vertices; the others lie on a parent edge or on the diagonal the
+parent's triangulation uses). The vertex shader blends the two by distance, in a window that ends
+just before the parent's split distance and starts after the chunk's own split distance — so a new
+chunk appears looking exactly like its parent and grows its detail as the camera approaches, and
+its own children later start from its full-detail surface. The blend depends only on vertex
+*position*, so neighbours agree on shared vertices and no crack opens mid-transition. A test
+builds a real parent mesh and checks that a fully morphed child coincides with it vertex by vertex.
+
+**Measured, not eyeballed.** `--record N,metres --record-lod-only` keeps the view fixed and moves
+only the LOD camera, so every change between frames comes from LOD transitions alone. Over a
+30-frame pull-back above procedural mountains, pixels that jump by more than 25 levels drop from
+0.127 % to 0.021 % per frame on average (**6×**) and **19×** in the worst frame. (The first version
+of the experiment moved the LOD camera *forward* — then frustum culling around the fixed view
+dominated everything; moving it backwards keeps the view inside the LOD frustum.)
+
+![Geomorphing comparison](docs/geomorph-diff.png)
+
+*Change between two consecutive frames at the worst LOD transition: without geomorphing (left) a
+whole chunk pops, with it (right) only small, gradual changes remain.*
+
+Vertices are 40 bytes: normals are packed into `GL_INT_2_10_10_10_REV` (~0.1° precision) so the
+second set of attributes costs 12 bytes instead of 24.
+
 ### Streaming
 
 **Background mesh generation.** A thread pool builds chunk meshes; the main thread only uploads
@@ -108,6 +134,14 @@ do not alias, and the normalisation keeps the large-scale shape identical across
 **Deterministic** across compilers (own PRNG instead of `std::shuffle`). **Seamless normals**
 computed from the height field around each vertex's direction, bit-identical across chunk borders.
 
+### Debug panel
+
+Dear ImGui (immediate mode: the panel is re-described from the live state every frame, so it can
+never show stale values). Frame-time graph, camera position, jump-to presets (Europe, Alps, Tatras,
+Himalaya, Andes), LOD statistics and controls (pixel error, max level, geomorphing, LOD colours,
+wireframe, freeze), and the sun's local azimuth / elevation. Input over the panel is not passed to
+the camera. `F4` hides it.
+
 ### Rendering
 
 Sky pass sharing its atmosphere functions with the terrain haze (distant mountains fade into the
@@ -117,8 +151,8 @@ ground-level views get real aerial perspective; ACES filmic tone mapping; sun di
 ### Engineering
 
 - `orbis_core` has no OpenGL or windowing dependency: math, geodesy, terrain, LOD and the thread
-  pool are all unit-tested — **66 Catch2 tests**, ~459 000 assertions, including checks against
-  known geography.
+  pool are all unit-tested — **69 Catch2 tests**, ~460 000 assertions, including checks against
+  known geography and parent/child geomorph consistency.
 - CI: Windows (MSVC) + Linux (GCC), Debug + Release, warnings as errors
   (`/W4`, `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wdouble-promotion ...`),
   **AddressSanitizer + UBSan**, **ThreadSanitizer**, and a headless render job that uploads frames.
@@ -155,7 +189,8 @@ startup item, and press F5. On Linux install the X11 headers first:
 ```
 orbis [--world earth|procedural] [--elevation file.oeg] [--size WxH]
       [--view lat,lon,altKm,heading,pitch] [--sun azimuth,elevation]
-      [--lod-colors] [--screenshot file.ppm]
+      [--lod-colors] [--no-geomorph]
+      [--screenshot file.ppm [--show-ui] [--record frames,metres [--record-lod-only]]]
 ```
 
 | Input | Action |
@@ -169,6 +204,7 @@ orbis [--world earth|procedural] [--elevation file.oeg] [--size WxH]
 | F1 | Wireframe |
 | F2 | Freeze LOD — keep the selection of this moment and fly around it to watch culling |
 | F3 | Colour chunks by quadtree level |
+| F4 | Show / hide the debug panel |
 | Esc | Quit |
 
 The window title shows FPS, altitude, position, chunks and triangles drawn, deepest level and the
@@ -193,7 +229,7 @@ src/core/      engine core, no GPU dependency
   terrain/     cube-sphere, noise, elevation sources (ETOPO grid, procedural), chunk meshes +
                skirts, quadtree LOD, thread pool
   scene/       ENU flight camera
-src/app/       window, terrain streaming + GPU cache, sky, OpenGL wrappers, application loop
+src/app/       window, terrain streaming + GPU cache, sky, debug panel, OpenGL wrappers, app loop
 shaders/       GLSL, embedded into the executable at build time
 data/          earth_etopo10.oeg - ETOPO1 elevation grid (generated by tools/prepare_etopo.py)
 tools/         data preparation scripts
@@ -209,8 +245,9 @@ tests/         Catch2 unit tests
       detail, `ElevationSource` interface.
 - [ ] **High-resolution tiles:** stream regional DEM tiles (ETOPO 2022 1′, SRTM) on demand.
 - [ ] **Land cover data** instead of the latitude stylisation.
-- [ ] **Smooth transitions:** geomorphing between LOD levels; ImGui debug panel; physically based
-      atmospheric scattering.
+- [x] **Smooth transitions and tooling:** geomorphing (measured 6× less popping), ImGui debug
+      panel, LOD recording for objective comparisons.
+- [ ] **Physically based atmosphere** (precomputed scattering).
 
 ## References
 
@@ -218,7 +255,9 @@ tests/         Catch2 unit tests
   10′ resampling from the PyVista example-data repository.
 - NIMA TR8350.2 — *Department of Defense World Geodetic System 1984*.
 - P. Cozzi, K. Ring — *3D Engine Design for Virtual Globes* (2011).
-- T. Ulrich — *Rendering Massive Terrains using Chunked Level of Detail Control* (SIGGRAPH 2002).
+- T. Ulrich — *Rendering Massive Terrains using Chunked Level of Detail Control* (SIGGRAPH 2002),
+  including geomorphing.
+- O. Cornut — *Dear ImGui*.
 - K. Perlin — *Improving Noise* (2002); F. K. Musgrave — *Texturing and Modeling: A Procedural
   Approach*, ch. on ridged multifractals.
 - N. Reed — *Depth Precision Visualized* (reversed-Z).
