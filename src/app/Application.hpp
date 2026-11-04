@@ -9,6 +9,7 @@
 #include "app/Sky.hpp"
 #include "app/Terrain.hpp"
 #include "app/Window.hpp"
+#include "app/gl/GpuTimers.hpp"
 #include "app/gl/RenderTarget.hpp"
 #include "core/geo/Ellipsoid.hpp"
 #include "core/scene/Camera.hpp"
@@ -28,30 +29,29 @@ enum class World { Earth, Procedural };
 
 struct AppOptions {
     World world = World::Earth;
-    std::optional<std::string> elevationFile; ///< Overrides the bundled Earth data.
-    std::optional<std::string> hgtDirectory;  ///< High-resolution .hgt tiles (default: data/hgt).
-    std::size_t tileBudgetMb = 1536;          ///< Memory for streamed tiles.
-    std::optional<std::string> landCoverFile; ///< Overrides the bundled land cover map.
-    bool landCover = true;                    ///< false: colours stylised by latitude.
+    std::optional<std::string> elevationFile;
+    std::optional<std::string> hgtDirectory; ///< Default: data/hgt.
+    std::size_t tileBudgetMb = 1536;
+    std::optional<std::string> landCoverFile;
+    bool landCover = true;
     int width = 1600;
     int height = 900;
-    std::optional<std::string> screenshotPath; ///< Render one frame, save it, exit (for CI).
-    bool showLodLevels = false;                ///< Start with the LOD debug colouring on.
-    bool showUi = true;                        ///< Debug panel (off by default for screenshots).
+    std::optional<std::string> screenshotPath; ///< Render, save, exit.
+    bool showLodLevels = false;
+    bool showUi = true;
     bool geomorph = true;
     bool shadows = true;
-    bool surfaceDetail = true; ///< Per-pixel surface detail (off: smooth shading, for comparison).
+    bool surfaceDetail = true;
     bool clouds = true;
     double cloudCoverage = 0.35; ///< 0 clear .. 1 overcast.
-    double fovDegrees = 45.0;  ///< Vertical field of view.
-    bool viewAboveGround = false; ///< --view altitude measured from the terrain, not sea level.
-    int recordFrames = 0;      ///< With screenshotPath: fly forward, save this many frames.
-    double recordStep = 0.0;   ///< Metres per recorded frame.
-    /// Move only the LOD camera while the view stays fixed: every change between frames is
-    /// then caused by level-of-detail transitions alone (an objective popping measurement).
+    double fovDegrees = 45.0; ///< Vertical.
+    bool viewAboveGround = false; ///< --view altitude above the terrain, not sea level.
+    int recordFrames = 0;     ///< With screenshotPath: fly forward, save this many frames.
+    double recordStep = 0.0;  ///< Metres per recorded frame.
+    /// Move only the LOD camera, so frame differences come from LOD transitions alone.
     bool recordLodOnly = false;
 
-    /// Initial camera: latitude / longitude / heading / pitch in degrees, altitude in km.
+    /// Degrees; altitude in km.
     struct View {
         double latitude = 48.7164; // Kosice
         double longitude = 21.2611;
@@ -60,14 +60,12 @@ struct AppOptions {
         double pitch = -89.0;
     } view;
 
-    /// Sun as seen from the starting point: azimuth (0 = north, 90 = east) and elevation, degrees.
-    double sunAzimuth = 225.0; // south-west: classic "afternoon" light for terrain relief
+    /// Local to the starting point, degrees from north.
+    double sunAzimuth = 225.0;
     double sunElevation = 30.0;
 };
 
-/// Builds the elevation source for the options (Earth with optional .hgt tiles, or procedural).
-/// Also used without a window, e.g. by --check-alps.
-/// `tiles` (optional) receives the tile streamer, if there are high-resolution tiles.
+/// Earth (with streamed .hgt tiles if any) or procedural. `tiles` receives the streamer, if any.
 std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& options,
                                                            const Ellipsoid& ellipsoid,
                                                            std::shared_ptr<HgtTileStreamer>* tiles = nullptr);
@@ -93,48 +91,46 @@ public:
 private:
     void handleInput(double dt);
     void updateTerrain(std::size_t maxUploads);
-    void updateTiles(); ///< Drives tile streaming; rebuilds the chunks over tiles that changed.
-    void settleTerrain(); ///< Stream until the LOD for the current view is complete.
-    /// Terrain height (m) under an ECEF point, at ~1 m detail - what the finest LOD shows.
+    void updateTiles();
+    void settleTerrain(); ///< Until the LOD for the current view is complete.
+    /// Metres, at the finest LOD's detail.
     double groundHeightAt(const Vec3d& ecef) const;
-    /// Keeps the camera above the terrain (not just above sea level): no flying through mountains.
     void clampCameraToGround();
     void renderFrame();
     void updateTitle(double dt);
     void saveScreenshot(const std::string& path) const;
+    void printGpuTimes() const;
 
-    // Debug panel (ApplicationUi.cpp) and the actions it triggers.
+    // ApplicationUi.cpp
     void buildDebugPanel(double dt);
     void goTo(const AppOptions::View& view, double sunAzimuth, double sunElevation);
-    void setSun(double latitude, double longitude); ///< From sunAzimuth_/sunElevation_, radians.
+    void setSun(double latitude, double longitude); ///< Radians.
     void toggleFreeze();
-    void loadLandCover(); ///< Earth only: reads the map, separates lakes from the sea, uploads.
+    void loadLandCover();
 
     AppOptions options_;
 
-    // Declaration order = construction order; destruction runs in REVERSE:
-    //  - Window first  => the GL context outlives every GL object declared below it.
-    //  - Elevation source before Terrain => Terrain's worker threads (which read it) are joined
-    //    before the source is destroyed.
+    // Order matters: the window (GL context) outlives every GL object, and the elevation
+    // source outlives the terrain's worker threads.
     Window window_;
-    DebugUi ui_; ///< Needs the GL context, so right after the window.
+    DebugUi ui_;
     Ellipsoid ellipsoid_ = Ellipsoid::wgs84();
-    std::shared_ptr<HgtTileStreamer> tiles_; ///< Before elevation_ (which samples it): dies after.
+    std::shared_ptr<HgtTileStreamer> tiles_;
     std::unique_ptr<const ElevationSource> elevation_;
     bool isEarth_ = false;
-    std::optional<LandCoverTexture> landCover_; ///< Earth only; GPU texture, needs the context.
+    std::optional<LandCoverTexture> landCover_;
     Camera camera_{ellipsoid_};
     gl::RenderTarget renderTarget_;
-    Atmosphere atmosphere_; ///< Before Sky and Terrain: their shaders are built from its prelude.
+    gl::GpuTimers gpuTimers_;
+    Atmosphere atmosphere_; ///< Before Sky, Clouds and Terrain: their shaders use its prelude.
     Sky sky_;
-    Clouds clouds_; ///< Before Terrain: its shader samples the clouds for their shadows.
+    Clouds clouds_;
     Terrain terrain_;
     ShadowCascades shadows_;
     ToneMap toneMap_;
     TerrainDrawSettings drawSettings_;
 
-    // Debug: when set, LOD selection uses this camera while you fly around with the real one,
-    // so you can watch frustum/horizon culling and refinement from outside.
+    // When set, LOD selection uses this camera, so culling can be watched from outside.
     std::optional<Camera> frozenLodCamera_;
 
     // Input state
@@ -154,6 +150,8 @@ private:
     KeyToggle lodColorKey_;
     KeyToggle finerKey_;
     KeyToggle coarserKey_;
+
+    double frameDt_ = 0.0; ///< 0 in screenshot mode: the clouds hold still.
 
     // Stats
     double titleTimer_ = 0.0;

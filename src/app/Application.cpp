@@ -25,6 +25,7 @@
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace orbis {
@@ -32,7 +33,8 @@ namespace orbis {
 namespace {
 
 constexpr double kDegToRad = std::numbers::pi / 180.0;
-constexpr std::size_t kUploadsPerFrame = 24; // bounds GPU upload work per frame (no hitches)
+constexpr std::size_t kUploadsPerFrame = 24;
+constexpr int kCloudConvergenceFrames = 12;
 
 WindowConfig makeWindowConfig(const AppOptions& options) {
     WindowConfig config;
@@ -62,8 +64,7 @@ std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& opt
         if (path) {
             try {
                 const auto start = std::chrono::steady_clock::now();
-                // High-resolution tiles are only INDEXED here (file names and sizes); they are
-                // streamed in on demand around the camera, so the folder may cover the planet.
+                // Only indexed here; tiles stream in around the camera.
                 std::shared_ptr<HgtTileStreamer> streamer;
                 const std::optional<std::filesystem::path> hgt =
                     options.hgtDirectory ? std::optional(std::filesystem::path(*options.hgtDirectory))
@@ -128,8 +129,7 @@ Application::Application(const AppOptions& options)
 
     std::cout << "OpenGL " << glGetString(GL_VERSION) << " | " << glGetString(GL_RENDERER) << '\n';
 
-    // Reversed-Z setup (see perspectiveReversedZInfinite): depth range [0, 1], 0 = infinitely
-    // far, so the buffer is cleared to 0 and nearer fragments win with GREATER.
+    // Reversed-Z: 0 is infinitely far.
     glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_GREATER);
@@ -158,7 +158,8 @@ Application::Application(const AppOptions& options)
     drawSettings_.geomorph = options.geomorph;
     drawSettings_.shadows = options.shadows;
     drawSettings_.surfaceDetail = options.surfaceDetail;
-    drawSettings_.clouds = options.clouds;
+    // Popping measurements diff consecutive frames; temporal cloud noise would swamp them.
+    drawSettings_.clouds = options.clouds && options.recordFrames == 0;
     sunAzimuth_ = options.sunAzimuth;
     sunElevation_ = options.sunElevation;
     setSun(v.latitude * kDegToRad, v.longitude * kDegToRad);
@@ -191,8 +192,7 @@ void Application::loadLandCover() {
 }
 
 void Application::setSun(double latitude, double longitude) {
-    // Sun given in the LOCAL frame (azimuth from north, elevation above the horizon), converted
-    // to a world (ECEF) direction - so "afternoon light from the south-west" works anywhere.
+    // Azimuth / elevation are local to the given position.
     const EnuFrame enu = Ellipsoid::enuFrame(latitude, longitude);
     const double az = sunAzimuth_ * kDegToRad;
     const double el = sunElevation_ * kDegToRad;
@@ -209,6 +209,7 @@ void Application::goTo(const AppOptions::View& view, double sunAzimuth, double s
     sunElevation_ = sunElevation;
     setSun(view.latitude * kDegToRad, view.longitude * kDegToRad);
     frozenLodCamera_.reset();
+    clouds_.resetHistory();
 }
 
 void Application::toggleFreeze() {
@@ -234,9 +235,7 @@ int Application::run() {
         }
 
         if (options_.recordFrames > 0) {
-            // Fly forward and save every frame, with the LOD fully settled each time: any change
-            // between consecutive frames then comes from motion and LOD transitions only, never
-            // from loading - which is what makes popping measurable.
+            // Settled every frame, so differences come from motion and LOD transitions only.
             std::string base = *options_.screenshotPath;
             if (const auto dot = base.rfind('.'); dot != std::string::npos) {
                 base.erase(dot);
@@ -262,17 +261,18 @@ int Application::run() {
             return 0;
         }
 
-        if (showUi_) {
-            // ImGui sizes auto-resizing windows over the first frames; let it settle.
-            for (int i = 0; i < 3; ++i) {
+        // Clouds accumulate over frames and ImGui sizes its windows over the first few.
+        const int frames = drawSettings_.clouds ? kCloudConvergenceFrames : (showUi_ ? 3 : 1);
+        for (int i = 0; i < frames; ++i) {
+            if (showUi_) {
                 ui_.beginFrame();
                 uiFrameActive_ = true;
                 buildDebugPanel(1.0 / 60.0);
-                renderFrame();
             }
-        } else {
             renderFrame();
         }
+        gpuTimers_.finishFrame();
+        printGpuTimes();
         saveScreenshot(*options_.screenshotPath);
         return 0;
     }
@@ -282,9 +282,10 @@ int Application::run() {
         Window::pollEvents();
 
         const double now = Window::time();
-        // Clamp dt: after a breakpoint or window drag, a huge dt would teleport the camera.
+        // A breakpoint or window drag must not teleport the camera.
         const double dt = std::min(now - previous, 0.1);
         previous = now;
+        frameDt_ = dt;
 
         if (showUi_) {
             ui_.beginFrame();
@@ -304,8 +305,6 @@ void Application::handleInput(double dt) {
     GLFWwindow* w = window_.handle();
     const auto down = [w](int key) { return glfwGetKey(w, key) == GLFW_PRESS; };
 
-    // While the panel has the mouse or keyboard (dragging a slider, typing), the camera must
-    // not react to the same input.
     const bool uiMouse = showUi_ && ui_.wantsMouse();
     const bool uiKeyboard = showUi_ && ui_.wantsKeyboard();
     if (uiKeyboard) {
@@ -328,7 +327,6 @@ void Application::handleInput(double dt) {
     if (lodColorKey_.pressed(down(GLFW_KEY_F3))) {
         drawSettings_.showLodLevels = !drawSettings_.showLodLevels;
     }
-    // [ = more detail, ] = less detail.
     double& pixelError = terrain_.lodSettings().maxPixelError;
     if (finerKey_.pressed(down(GLFW_KEY_LEFT_BRACKET))) {
         pixelError = std::max(pixelError / 1.5, 0.5);
@@ -337,8 +335,7 @@ void Application::handleInput(double dt) {
         pixelError = std::min(pixelError * 1.5, 64.0);
     }
 
-    // Mouse look while the right button is held.
-    // Start looking only if the click was not on the panel (but keep looking once started).
+    // Right button looks around, unless the press started on the panel.
     const bool rmb = glfwGetMouseButton(w, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS &&
                      (looking_ || !uiMouse);
     double cx = 0.0;
@@ -359,14 +356,12 @@ void Application::handleInput(double dt) {
         lastCursorY_ = cy;
     }
 
-    // Each wheel notch changes speed by 25%: multiplicative feels linear to humans.
     const double scroll = window_.consumeScroll();
     if (!uiMouse) {
         speedMultiplier_ = std::clamp(speedMultiplier_ * std::pow(1.25, scroll), 0.001, 50.0);
     }
 
-    // Speed proportional to altitude: 1 km/s feels right at 1 km, 1000 km/s at 1000 km. With a
-    // fixed speed you either crawl in orbit or crash into mountains at ground level.
+    // Speed scales with altitude: 1 km/s at 1 km, 1000 km/s at 1000 km.
     const CameraBasis b = camera_.basis();
     const double altitude = std::max(b.geodetic.height, 1.0);
     double speed = altitude * speedMultiplier_;
@@ -388,13 +383,12 @@ void Application::handleInput(double dt) {
 }
 
 double Application::groundHeightAt(const Vec3d& ecef) const {
-    // Same sampling as the mesh: terrain is indexed by direction from the centre. (The geocentric
-    // and geodetic verticals differ by < 0.2 degrees: metres at these heights.)
+    // Indexed by direction like the mesh; geocentric vs geodetic vertical is < 0.2 degrees.
     return std::max(elevation_->elevation(normalize(ecef), 1.0), 0.0);
 }
 
 void Application::clampCameraToGround() {
-    constexpr double kClearance = 2.0; // metres above the ground
+    constexpr double kClearance = 2.0;
     Geodetic g = ellipsoid_.ecefToGeodetic(camera_.position());
     const double minimum = groundHeightAt(camera_.position()) + kClearance;
     if (g.height < minimum) {
@@ -404,8 +398,7 @@ void Application::clampCameraToGround() {
 }
 
 void Application::settleTerrain() {
-    // Let the LOD stream in until the image is final (or give up after a minute), so CI
-    // screenshots are deterministic rather than "whatever had loaded so far".
+    // Deterministic screenshots: wait until everything is loaded.
     const auto start = std::chrono::steady_clock::now();
     do {
         updateTerrain(std::numeric_limits<std::size_t>::max());
@@ -418,8 +411,7 @@ void Application::updateTiles() {
     if (!tiles_) {
         return;
     }
-    // Tiles that arrived or left: rebuild the fine chunks over them (and over the feather band
-    // of their neighbours, whose blend towards them changed too).
+    // Neighbours' feather bands blend towards the tile, so they are rebuilt too.
     constexpr double kDeg = std::numbers::pi / 180.0;
     for (const HgtTileStreamer::Change& c : tiles_->update()) {
         const double lat = (c.lat + 0.5) * kDeg;
@@ -433,7 +425,7 @@ void Application::updateTiles() {
 }
 
 void Application::updateTerrain(std::size_t maxUploads) {
-    clampCameraToGround(); // every path that moves the camera ends up here once per frame
+    clampCameraToGround();
     updateTiles();
     int width = 0;
     int height = 0;
@@ -453,10 +445,12 @@ void Application::renderFrame() {
             ui_.discardFrame();
             uiFrameActive_ = false;
         }
-        return; // minimised
+        return;
     }
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    gpuTimers_.beginFrame();
     if (drawSettings_.shadows) {
+        const auto timer = gpuTimers_.scope(gl::GpuPass::Shadows);
         shadows_.render(camera_, aspect, drawSettings_.sunDirection, terrain_,
                         drawSettings_.geomorph, groundHeightAt(camera_.position()));
     }
@@ -464,31 +458,56 @@ void Application::renderFrame() {
     renderTarget_.resize(width, height);
     renderTarget_.bindScene();
 
-    // Each pass sets the GL state it relies on instead of trusting the previous pass to have
-    // restored it: the shadow pass clears depth to 1 (standard depth), this one needs 0
-    // (reversed-Z). Forgetting this once made the whole terrain fail the depth test.
+    // The shadow pass leaves standard depth state behind.
     glClearColor(0.004f, 0.006f, 0.014f, 1.0f);
     glClearDepth(0.0);
     glDepthFunc(GL_GREATER);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    clouds_.update(camera_, frameDt_);
     atmosphere_.bind();
-    sky_.draw(camera_, aspect, drawSettings_.sunDirection, drawSettings_.sunIlluminance);
-    terrain_.draw(camera_, aspect, drawSettings_, drawSettings_.shadows ? &shadows_ : nullptr);
-    if (drawSettings_.clouds) {
-        renderTarget_.bindSceneColor(); // the cloud pass samples the depth, so detach it
-        clouds_.draw(camera_, aspect, height, drawSettings_.sunDirection,
-                     drawSettings_.sunIlluminance, renderTarget_.sceneDepth());
+    {
+        const auto timer = gpuTimers_.scope(gl::GpuPass::Sky);
+        sky_.draw(camera_, aspect, drawSettings_.sunDirection, drawSettings_.sunIlluminance);
+    }
+    {
+        const auto timer = gpuTimers_.scope(gl::GpuPass::Terrain);
+        terrain_.draw(camera_, aspect, drawSettings_, drawSettings_.shadows ? &shadows_ : nullptr);
+    }
+    if (!drawSettings_.clouds) {
+        clouds_.resetHistory();
+    } else {
+        const auto timer = gpuTimers_.scope(gl::GpuPass::Clouds);
+        clouds_.render(camera_, aspect, width, height, drawSettings_.sunDirection,
+                       drawSettings_.sunIlluminance, renderTarget_.sceneDepth());
+        renderTarget_.bindSceneColor(); // the composite samples the depth
+        clouds_.composite(camera_, aspect, width, height, renderTarget_.sceneDepth());
     }
 
     renderTarget_.bindDisplay();
-    toneMap_.draw(renderTarget_.sceneColor());
+    {
+        const auto timer = gpuTimers_.scope(gl::GpuPass::ToneMap);
+        toneMap_.draw(renderTarget_.sceneColor());
+    }
     if (uiFrameActive_) {
-        ui_.render(); // into our framebuffer, so screenshots include it
+        const auto timer = gpuTimers_.scope(gl::GpuPass::Ui);
+        ui_.render();
         uiFrameActive_ = false;
     }
 
     renderTarget_.blitToWindow();
+}
+
+void Application::printGpuTimes() const {
+    std::cout << "GPU ms:";
+    for (std::size_t p = 0; p < gl::GpuTimers::kPasses; ++p) {
+        const auto pass = static_cast<gl::GpuPass>(p);
+        if (gpuTimers_.milliseconds(pass) > 0.0) {
+            std::printf(" %s %.2f |", std::string(gl::gpuPassName(pass)).c_str(), gpuTimers_.milliseconds(pass));
+        }
+    }
+    std::printf(" total %.2f\n", gpuTimers_.totalMilliseconds());
+    std::fflush(stdout);
 }
 
 void Application::updateTitle(double dt) {
@@ -526,7 +545,7 @@ void Application::saveScreenshot(const std::string& path) const {
     const int w = renderTarget_.width();
     const int h = renderTarget_.height();
 
-    // Binary PPM: trivial format, no library needed. OpenGL rows are bottom-up, PPM top-down.
+    // OpenGL rows are bottom-up, PPM top-down.
     std::ofstream out(path, std::ios::binary);
     if (!out) {
         throw std::runtime_error("Cannot write screenshot: " + path);

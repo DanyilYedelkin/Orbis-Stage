@@ -15,7 +15,8 @@ add_executable(orbis
     ApplicationUi.cpp
     gl/ShaderProgram.cpp
     gl/RenderTarget.cpp
-    gl/DebugOutput.cpp)
+    gl/DebugOutput.cpp
+    gl/GpuTimers.cpp)
 
 orbis_embed_shaders(orbis
     "${PROJECT_SOURCE_DIR}/shaders/common.glsl"
@@ -25,7 +26,10 @@ orbis_embed_shaders(orbis
     "${PROJECT_SOURCE_DIR}/shaders/irradiance.comp"
     "${PROJECT_SOURCE_DIR}/shaders/clouds.glsl"
     "${PROJECT_SOURCE_DIR}/shaders/cloud_noise.comp"
-    "${PROJECT_SOURCE_DIR}/shaders/clouds.frag"
+    "${PROJECT_SOURCE_DIR}/shaders/cloud_view.glsl"
+    "${PROJECT_SOURCE_DIR}/shaders/clouds_march.frag"
+    "${PROJECT_SOURCE_DIR}/shaders/clouds_resolve.frag"
+    "${PROJECT_SOURCE_DIR}/shaders/clouds_composite.frag"
     "${PROJECT_SOURCE_DIR}/shaders/tonemap.frag"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.vert"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.frag"

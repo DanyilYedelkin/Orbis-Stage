@@ -1,5 +1,3 @@
-// The debug panel. Kept apart from Application.cpp: it is pure presentation of state that lives
-// elsewhere, and immediate-mode UI code is long but simple.
 #include "app/Application.hpp"
 
 #include <imgui.h>
@@ -8,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <string>
 
 namespace orbis {
 
@@ -34,7 +33,6 @@ constexpr std::array kProceduralPlaces = {
     Place{"Mountains", {0.30, -140.75, 6.5, 45.0, -10.0}, 225.0, 30.0},
 };
 
-/// Small helper: ImGui sliders work in float, our settings are double.
 bool sliderDouble(const char* label, double& value, float min, float max, const char* format,
                   ImGuiSliderFlags flags = 0) {
     auto f = static_cast<float>(value);
@@ -65,6 +63,15 @@ void Application::buildDebugPanel(double dt) {
     ImGui::PlotLines("##frametime", frameTimes_.data(), static_cast<int>(frameTimes_.size()),
                      static_cast<int>(frameTimeIndex_), "frame time (ms)", 0.0f, 50.0f,
                      {0.0f, 48.0f});
+
+    if (ImGui::CollapsingHeader("GPU", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (std::size_t p = 0; p < gl::GpuTimers::kPasses; ++p) {
+            const auto pass = static_cast<gl::GpuPass>(p);
+            const std::string name(gl::gpuPassName(pass));
+            ImGui::Text("%-9s %6.2f ms", name.c_str(), gpuTimers_.milliseconds(pass));
+        }
+        ImGui::Text("%-9s %6.2f ms", "total", gpuTimers_.totalMilliseconds());
+    }
 
     // ---- Camera
     const CameraBasis b = camera_.basis();
@@ -154,6 +161,8 @@ void Application::buildDebugPanel(double dt) {
         }
         if (drawSettings_.clouds) {
             ImGui::SliderFloat("cloud cover", &clouds_.coverage, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("wind", &clouds_.windSpeed, 0.0f, 60.0f, "%.0f m/s");
+            ImGui::SliderFloat("wind heading", &clouds_.windHeading, 0.0f, 360.0f, "%.0f deg");
         }
         if (changed) {
             // Relative to where the camera is NOW: "sun in the south-west at 20 degrees" means
