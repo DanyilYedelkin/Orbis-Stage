@@ -2,6 +2,8 @@
 
 #include "core/math/Vec3.hpp"
 
+#include <cstdint>
+
 namespace orbis {
 
 /// Upper bound of terrain elevation for EVERY source, in metres. Bounding volumes are built from
@@ -24,6 +26,10 @@ public:
     virtual double elevation(const Vec3d& unitDirection, double sampleSpacing) const = 0;
 
     double elevation(const Vec3d& unitDirection) const { return elevation(unitDirection, 0.0); }
+
+    /// Sources whose data changes over time (streamed tiles) increase this whenever it does; a
+    /// mesh built from an older version may be stale. Immutable sources: always 0.
+    virtual std::uint64_t version() const { return 0; }
 
 protected:
     ElevationSource() = default;

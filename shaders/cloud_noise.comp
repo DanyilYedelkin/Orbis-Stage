@@ -1,0 +1,89 @@
+// Generates the tiling 3D cloud noise once at startup.
+//   R    Perlin-Worley: smooth Perlin fBm "inflated" by Worley cells - billowy cumulus shapes
+//   GBA  Worley fBm at 4, 8 and 16 cells per tile - for sharpening the shapes and for erosion
+// Everything is periodic over the texture (feature points and gradients are hashed from WRAPPED
+// cell coordinates), so the clouds can be anchored to the world with small coordinates.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(rgba8, binding = 0) uniform writeonly image3D uOutput;
+uniform int uSize;
+
+float remap(float v, float l0, float h0, float l1, float h1) {
+    return l1 + (v - l0) * (h1 - l1) / (h0 - l0);
+}
+
+uvec3 pcg3d(uvec3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+vec3 hash33(ivec3 cell, int period, uint seed) {
+    uvec3 c = uvec3((cell % period + period) % period);
+    return vec3(pcg3d(c + uvec3(seed, seed * 7u, seed * 13u)) & 0xFFFFFFu) / float(0xFFFFFF);
+}
+
+// 1 - distance to the nearest feature point (in cells), periodic with `cells` per tile.
+float worley(vec3 p, int cells, uint seed) {
+    vec3 x = p * float(cells);
+    ivec3 base = ivec3(floor(x));
+    float nearest = 1e9;
+    for (int k = -1; k <= 1; ++k) {
+        for (int j = -1; j <= 1; ++j) {
+            for (int i = -1; i <= 1; ++i) {
+                ivec3 cell = base + ivec3(i, j, k);
+                vec3 feature = vec3(cell) + hash33(cell, cells, seed);
+                vec3 d = x - feature;
+                nearest = min(nearest, dot(d, d));
+            }
+        }
+    }
+    return 1.0 - clamp(sqrt(nearest), 0.0, 1.0);
+}
+
+float worleyFbm(vec3 p, int cells, uint seed) {
+    return worley(p, cells, seed) * 0.625 + worley(p, cells * 2, seed + 1u) * 0.25 +
+           worley(p, cells * 4, seed + 2u) * 0.125;
+}
+
+float periodicPerlin(vec3 p, int period, uint seed) {
+    vec3 x = p * float(period);
+    ivec3 i0 = ivec3(floor(x));
+    vec3 f = x - vec3(i0);
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float corners[8];
+    for (int c = 0; c < 8; ++c) {
+        ivec3 o = ivec3(c & 1, (c >> 1) & 1, c >> 2);
+        vec3 g = normalize(hash33(i0 + o, period, seed) * 2.0 - 1.0 + 1e-4);
+        corners[c] = dot(g, f - vec3(o));
+    }
+    float x00 = mix(corners[0], corners[1], u.x);
+    float x10 = mix(corners[2], corners[3], u.x);
+    float x01 = mix(corners[4], corners[5], u.x);
+    float x11 = mix(corners[6], corners[7], u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+void main() {
+    ivec3 texel = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(texel, ivec3(uSize)))) {
+        return;
+    }
+    vec3 p = (vec3(texel) + 0.5) / float(uSize);
+
+    float perlin = 0.0;
+    float amplitude = 1.0;
+    float total = 0.0;
+    for (int o = 0; o < 4; ++o) {
+        perlin += periodicPerlin(p, 4 << o, 11u + uint(o)) * amplitude;
+        total += amplitude;
+        amplitude *= 0.5;
+    }
+    perlin = clamp(perlin / total * 1.6 + 0.5, 0.0, 1.0);
+
+    float cells = worleyFbm(p, 4, 101u);
+    float perlinWorley = clamp(remap(perlin, cells - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+
+    imageStore(uOutput, texel, vec4(perlinWorley, worleyFbm(p, 4, 201u), worleyFbm(p, 8, 301u),
+                                    worleyFbm(p, 16, 401u)));
+}

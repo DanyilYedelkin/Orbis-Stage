@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/Atmosphere.hpp"
+#include "app/DetailTexture.hpp"
 #include "app/gl/GlHandle.hpp"
 #include "app/gl/ShaderProgram.hpp"
 #include "core/geo/Ellipsoid.hpp"
@@ -16,6 +17,8 @@
 
 namespace orbis {
 
+class Clouds;
+class LandCoverTexture;
 class ShadowCascades;
 
 struct TerrainDrawSettings {
@@ -25,11 +28,15 @@ struct TerrainDrawSettings {
     bool geomorph = true;       ///< Smooth LOD transitions (off = classic popping, for comparison).
     float sunIlluminance = 7.0f; ///< Relative units; the tone mapper's exposure is tuned for it.
     bool shadows = true;
+    bool landCover = true; ///< Use the land cover map if there is one (off = latitude stylisation).
+    bool surfaceDetail = true; ///< Per-pixel detail: bump mapping, albedo variation, frayed edges.
+    bool clouds = true;        ///< Volumetric clouds and their shadows.
 };
 
 struct TerrainStats {
     std::size_t drawnChunks = 0;
     std::size_t residentChunks = 0;
+    std::size_t staleChunks = 0; ///< Drawn, but rebuilding for newer (streamed) data.
     std::size_t pendingBuilds = 0;
     std::size_t runningBuilds = 0;
     std::size_t drawnTriangles = 0;
@@ -48,8 +55,9 @@ struct TerrainStats {
 ///   4. evict chunks nobody has used for a while (bounded GPU memory)
 class Terrain {
 public:
+    /// `clouds` must outlive the terrain (its shadows are drawn on it).
     Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
-            const LodSettings& settings, const Atmosphere& atmosphere);
+            const LodSettings& settings, const Atmosphere& atmosphere, const Clouds& clouds);
 
     /// `lodCamera` drives selection; normally the real camera, a frozen copy when debugging.
     void update(const Camera& lodCamera, int viewportWidth, int viewportHeight,
@@ -61,6 +69,16 @@ public:
     /// Depth-only pass with the same geometry and morphing as draw(), for the shadow maps.
     void drawDepth(const gl::ShaderProgram& program, const Camera& camera,
                    const Mat4f& viewProjection, bool geomorph) const;
+
+    /// The elevation data changed inside a spherical cap (unit centre direction, angular radius)
+    /// at `version`: resident chunks there whose vertex spacing is finer than `coarsestAffected`
+    /// metres get rebuilt. They keep being drawn until the new mesh arrives, so nothing flickers
+    /// or opens a hole.
+    void invalidate(const Vec3d& centre, double angularRadius, std::uint64_t version,
+                    double coarsestAffected);
+
+    /// Land cover map for the colours; null = stylised by latitude. Not owned.
+    void setLandCover(const LandCoverTexture* landCover) { landCover_ = landCover; }
 
     /// Last selection requested nothing and no build is in flight: the image is final.
     bool settled() const;
@@ -76,6 +94,10 @@ private:
         HeightRange heights;     ///< Of the mesh itself: gives the quadtree tight bounds.
         std::uint64_t lastUsedFrame = 0;
         std::uint8_t level = 0;
+        double boundingRadius = 0.0;       ///< Around origin, metres.
+        std::uint64_t dataVersion = 0;     ///< Elevation data version it was built from.
+        std::uint64_t requiredVersion = 0; ///< Newer data exists here: rebuild if dataVersion < this.
+        bool stale() const { return dataVersion < requiredVersion; }
     };
 
     void upload(const NodeKey& key, const ChunkMesh& mesh);
@@ -86,6 +108,9 @@ private:
 
     Ellipsoid ellipsoid_;
     TerrainLod lod_;
+    const LandCoverTexture* landCover_ = nullptr;
+    const Clouds* clouds_;
+    DetailTexture detail_;
     gl::ShaderProgram shader_;
     gl::Buffer indexBuffer_; ///< One topology (grid + skirt), shared by every chunk.
     GLsizei indexCount_ = 0;

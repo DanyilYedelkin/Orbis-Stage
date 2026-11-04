@@ -4,6 +4,9 @@
 #include "core/terrain/CubeSphere.hpp"
 #include "core/terrain/EarthTerrain.hpp"
 #include "core/terrain/HeightField.hpp"
+#include "core/terrain/HgtTileStreamer.hpp"
+#include "core/terrain/HgtTiles.hpp"
+#include "core/terrain/LandCover.hpp"
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -45,9 +48,13 @@ WindowConfig makeWindowConfig(const AppOptions& options) {
 
 constexpr std::uint64_t kTerrainSeed = 20261102;
 constexpr const char* kEarthDataFile = "earth_etopo10.oeg";
+constexpr const char* kLandCoverFile = "earth_landcover.olc";
+
+} // namespace
 
 std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& options,
-                                                           const Ellipsoid& ellipsoid) {
+                                                           const Ellipsoid& ellipsoid,
+                                                           std::shared_ptr<HgtTileStreamer>* tiles) {
     if (options.world == World::Earth) {
         const std::optional<std::filesystem::path> path =
             options.elevationFile ? std::optional(std::filesystem::path(*options.elevationFile))
@@ -55,8 +62,32 @@ std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& opt
         if (path) {
             try {
                 const auto start = std::chrono::steady_clock::now();
+                // High-resolution tiles are only INDEXED here (file names and sizes); they are
+                // streamed in on demand around the camera, so the folder may cover the planet.
+                std::shared_ptr<HgtTileStreamer> streamer;
+                const std::optional<std::filesystem::path> hgt =
+                    options.hgtDirectory ? std::optional(std::filesystem::path(*options.hgtDirectory))
+                                         : findDataDirectory("hgt");
+                if (hgt) {
+                    std::vector<HgtTileFile> files = scanHgtDirectory(*hgt);
+                    if (!files.empty()) {
+                        std::size_t oneArcSecond = 0;
+                        for (const HgtTileFile& f : files) {
+                            oneArcSecond += f.samples > 2000 ? 1 : 0;
+                        }
+                        std::cout << "High-resolution tiles: " << files.size() << " in " << hgt->string()
+                                  << " (" << oneArcSecond << " at 1\", the rest 3\"), streamed on demand"
+                                  << ", budget " << (options.tileBudgetMb) << " MB\n";
+                        TileStreamingSettings settings;
+                        settings.memoryBudget = options.tileBudgetMb << 20;
+                        streamer = std::make_shared<HgtTileStreamer>(std::move(files), settings);
+                    }
+                }
+                if (tiles != nullptr) {
+                    *tiles = streamer;
+                }
                 auto earth = std::make_unique<EarthTerrain>(ElevationGrid::load(*path), ellipsoid,
-                                                            kTerrainSeed);
+                                                            kTerrainSeed, std::move(streamer));
                 const auto ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - start);
                 std::cout << "Earth elevation: " << path->string() << " ("
@@ -74,19 +105,25 @@ std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& opt
     return std::make_unique<HeightField>(kTerrainSeed);
 }
 
-} // namespace
-
 Application::Application(const AppOptions& options)
     : options_(options), window_(makeWindowConfig(options)), ui_(window_.handle()),
-      elevation_(makeElevationSource(options, ellipsoid_)),
+      elevation_(makeElevationSource(options, ellipsoid_, &tiles_)),
       isEarth_(dynamic_cast<const EarthTerrain*>(elevation_.get()) != nullptr),
       atmosphere_(AtmosphereParameters{}, ellipsoid_), sky_(atmosphere_),
-      terrain_(ellipsoid_, *elevation_, LodSettings{}, atmosphere_) {
+      clouds_(CloudParameters{.coverage = options.cloudCoverage}, atmosphere_, ellipsoid_),
+      terrain_(ellipsoid_, *elevation_, LodSettings{}, atmosphere_, clouds_) {
     const double lutError = atmosphere_.validateAgainstCpu();
     std::cout << "Atmosphere LUTs ready; transmittance GPU vs CPU max difference " << lutError
               << '\n';
     if (lutError > 0.01) {
         throw std::runtime_error("Atmosphere transmittance LUT disagrees with the CPU reference");
+    }
+    const double irradianceError = atmosphere_.irradianceValidationError();
+    std::cout << "Sky irradiance LUT: single scattering GPU vs CPU max difference "
+              << irradianceError * 100.0 << " % of the maximum; multiple scattering adds "
+              << (atmosphere_.multipleScatteringGain() - 1.0) * 100.0 << " % at noon\n";
+    if (irradianceError > 0.03) {
+        throw std::runtime_error("Sky irradiance LUT disagrees with the CPU reference");
     }
 
     std::cout << "OpenGL " << glGetString(GL_VERSION) << " | " << glGetString(GL_RENDERER) << '\n';
@@ -103,6 +140,9 @@ Application::Application(const AppOptions& options)
     glFrontFace(GL_CCW);
 
     drawSettings_.showLodLevels = options.showLodLevels;
+    if (isEarth_ && options.landCover) {
+        loadLandCover();
+    }
 
     const AppOptions::View& v = options_.view;
     double altitude = v.altitudeKm * 1000.0;
@@ -117,9 +157,37 @@ Application::Application(const AppOptions& options)
     camera_.verticalFov = static_cast<float>(options.fovDegrees * kDegToRad);
     drawSettings_.geomorph = options.geomorph;
     drawSettings_.shadows = options.shadows;
+    drawSettings_.surfaceDetail = options.surfaceDetail;
+    drawSettings_.clouds = options.clouds;
     sunAzimuth_ = options.sunAzimuth;
     sunElevation_ = options.sunElevation;
     setSun(v.latitude * kDegToRad, v.longitude * kDegToRad);
+}
+
+void Application::loadLandCover() {
+    const std::optional<std::filesystem::path> path =
+        options_.landCoverFile ? std::optional(std::filesystem::path(*options_.landCoverFile))
+                               : findDataFile(kLandCoverFile);
+    if (!path) {
+        std::cerr << "Warning: " << kLandCoverFile << " not found (run tools/prepare_landcover.py"
+                  << " or pass --landcover); colours are stylised by latitude.\n";
+        return;
+    }
+    try {
+        const auto start = std::chrono::steady_clock::now();
+        LandCover cover = LandCover::load(*path);
+        const auto* earth = dynamic_cast<const EarthTerrain*>(elevation_.get());
+        const std::size_t lakes = cover.separateInlandWater(earth->measuredGrid());
+        landCover_.emplace(cover);
+        terrain_.setLandCover(&*landCover_);
+        const auto ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start);
+        std::cout << "Land cover: " << path->string() << ", " << cover.width() << " x "
+                  << cover.height() << " cells, " << lakes << " lake cells ("
+                  << static_cast<long long>(ms.count()) << " ms)\n";
+    } catch (const std::exception& e) {
+        std::cerr << "Warning: " << e.what() << "; colours are stylised by latitude.\n";
+    }
 }
 
 void Application::setSun(double latitude, double longitude) {
@@ -159,6 +227,11 @@ int Application::run() {
                   << st.residentChunks << " resident, deepest level " << st.deepestLevel
                   << ", culled " << st.frustumCulled << " frustum / " << st.horizonCulled
                   << " horizon\n";
+        if (tiles_) {
+            const HgtTileStreamer::Stats ts = tiles_->stats();
+            std::cout << "hgt tiles: " << ts.loaded << " of " << ts.available << " loaded on demand ("
+                      << ts.bytes / (1024 * 1024) << " MB), " << ts.evictions << " evicted\n";
+        }
 
         if (options_.recordFrames > 0) {
             // Fly forward and save every frame, with the LOD fully settled each time: any change
@@ -337,12 +410,31 @@ void Application::settleTerrain() {
     do {
         updateTerrain(std::numeric_limits<std::size_t>::max());
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    } while (!terrain_.settled() &&
-             std::chrono::steady_clock::now() - start < std::chrono::seconds(60));
+    } while ((!terrain_.settled() || (tiles_ && !tiles_->idle())) &&
+             std::chrono::steady_clock::now() - start < std::chrono::seconds(90));
+}
+
+void Application::updateTiles() {
+    if (!tiles_) {
+        return;
+    }
+    // Tiles that arrived or left: rebuild the fine chunks over them (and over the feather band
+    // of their neighbours, whose blend towards them changed too).
+    constexpr double kDeg = std::numbers::pi / 180.0;
+    for (const HgtTileStreamer::Change& c : tiles_->update()) {
+        const double lat = (c.lat + 0.5) * kDeg;
+        const double lon = (c.lon + 0.5) * kDeg;
+        const Vec3d centre{std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
+        const double halfDiagonal = std::hypot(0.5, 0.5 * std::cos(lat)) * kDeg;
+        const double feather = kHighResolutionFeather / 6371000.0;
+        terrain_.invalidate(centre, halfDiagonal + 2.0 * feather, c.version,
+                            TileStreamingSettings{}.fadeSpacing);
+    }
 }
 
 void Application::updateTerrain(std::size_t maxUploads) {
     clampCameraToGround(); // every path that moves the camera ends up here once per frame
+    updateTiles();
     int width = 0;
     int height = 0;
     window_.framebufferSize(width, height);
@@ -370,7 +462,7 @@ void Application::renderFrame() {
     }
 
     renderTarget_.resize(width, height);
-    renderTarget_.bind();
+    renderTarget_.bindScene();
 
     // Each pass sets the GL state it relies on instead of trusting the previous pass to have
     // restored it: the shadow pass clears depth to 1 (standard depth), this one needs 0
@@ -383,6 +475,14 @@ void Application::renderFrame() {
     atmosphere_.bind();
     sky_.draw(camera_, aspect, drawSettings_.sunDirection, drawSettings_.sunIlluminance);
     terrain_.draw(camera_, aspect, drawSettings_, drawSettings_.shadows ? &shadows_ : nullptr);
+    if (drawSettings_.clouds) {
+        renderTarget_.bindSceneColor(); // the cloud pass samples the depth, so detach it
+        clouds_.draw(camera_, aspect, height, drawSettings_.sunDirection,
+                     drawSettings_.sunIlluminance, renderTarget_.sceneDepth());
+    }
+
+    renderTarget_.bindDisplay();
+    toneMap_.draw(renderTarget_.sceneColor());
     if (uiFrameActive_) {
         ui_.render(); // into our framebuffer, so screenshots include it
         uiFrameActive_ = false;

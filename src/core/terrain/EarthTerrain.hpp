@@ -3,9 +3,12 @@
 #include "core/geo/Ellipsoid.hpp"
 #include "core/terrain/ElevationGrid.hpp"
 #include "core/terrain/ElevationSource.hpp"
+#include "core/terrain/HighResolutionTerrain.hpp"
 #include "core/terrain/Noise.hpp"
 
 #include <cstdint>
+#include <memory>
+#include <optional>
 
 namespace orbis {
 
@@ -29,7 +32,16 @@ inline constexpr double kCrestStd = 0.134;
 
 class EarthTerrain final : public ElevationSource {
 public:
-    EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed);
+    /// `highResolution`: optional regional DEM (e.g. .hgt tiles of the Alps). Inside it, the
+    /// real high-resolution relief replaces the base data and its synthetic mountains; a few km
+    /// wide band at its edge blends between the two.
+    EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed,
+                 std::optional<ElevationGrid> highResolution = std::nullopt);
+
+    /// Any high-resolution layer, e.g. tiles streamed on demand (HgtTileStreamer). Shared, so
+    /// the application can drive the streaming while the terrain samples it.
+    EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed,
+                 std::shared_ptr<const HighResolutionTerrain> highResolution);
 
     using ElevationSource::elevation;
     double elevation(const Vec3d& unitDirection, double sampleSpacing) const override;
@@ -39,13 +51,27 @@ public:
         return grid_.sample(latitude, longitude, 0.0);
     }
 
+    /// The measured base grid (ETOPO), e.g. to tell the sea from lakes in the land cover map.
+    const ElevationGrid& measuredGrid() const { return grid_; }
+
+    bool hasHighResolution() const { return highResolution_ != nullptr; }
+
+    /// Changes when streamed high-resolution data arrives or leaves (see ElevationSource).
+    std::uint64_t version() const override {
+        return highResolution_ ? highResolution_->version() : 0;
+    }
+
 private:
+    double baseElevation(const Vec3d& dir, double latitude, double longitude,
+                         double sampleSpacing) const;
+
     ElevationGrid grid_;
     ElevationGrid relief_; ///< Smooth local relief: where (and how strongly) the mountains are.
     Ellipsoid ellipsoid_;
     double dataSpacing_; ///< Metres between grid nodes at full resolution.
     PerlinNoise detail_;
     PerlinNoise alpine_;
+    std::shared_ptr<const HighResolutionTerrain> highResolution_;
 };
 
 } // namespace orbis

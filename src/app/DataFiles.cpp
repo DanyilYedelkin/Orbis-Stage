@@ -48,4 +48,18 @@ std::optional<std::filesystem::path> findDataFile(std::string_view name) {
     return std::nullopt;
 }
 
+std::optional<std::filesystem::path> findDataDirectory(std::string_view name) {
+    const std::filesystem::path candidates[] = {
+        executableDirectory() / "data" / name,
+        std::filesystem::path(ORBIS_SOURCE_DATA_DIR) / name,
+    };
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(candidate, ec)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace orbis

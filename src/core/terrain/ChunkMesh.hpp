@@ -54,6 +54,9 @@ struct ChunkMesh {
     double boundingRadius = 0.0; ///< Sphere around origin containing every SURFACE vertex.
     double minHeight = 0.0;      ///< Lowest surface point (own or morph target), metres, >= 0.
     double maxHeight = 0.0;      ///< Highest surface point (own or morph target).
+    /// ElevationSource::version() when the build started: data that changed later (streamed
+    /// tiles) is not in this mesh.
+    std::uint64_t dataVersion = 0;
     std::vector<TerrainVertex> vertices;
 };
 

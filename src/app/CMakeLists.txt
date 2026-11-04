@@ -5,6 +5,10 @@ add_executable(orbis
     Terrain.cpp
     Sky.cpp
     DataFiles.cpp
+    LandCoverTexture.cpp
+    DetailTexture.cpp
+    Clouds.cpp
+    ToneMap.cpp
     Atmosphere.cpp
     ShadowCascades.cpp
     DebugUi.cpp
@@ -18,6 +22,11 @@ orbis_embed_shaders(orbis
     "${PROJECT_SOURCE_DIR}/shaders/atmosphere.glsl"
     "${PROJECT_SOURCE_DIR}/shaders/transmittance.comp"
     "${PROJECT_SOURCE_DIR}/shaders/multiscattering.comp"
+    "${PROJECT_SOURCE_DIR}/shaders/irradiance.comp"
+    "${PROJECT_SOURCE_DIR}/shaders/clouds.glsl"
+    "${PROJECT_SOURCE_DIR}/shaders/cloud_noise.comp"
+    "${PROJECT_SOURCE_DIR}/shaders/clouds.frag"
+    "${PROJECT_SOURCE_DIR}/shaders/tonemap.frag"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.vert"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.frag"
     "${PROJECT_SOURCE_DIR}/shaders/sky.vert"
@@ -34,8 +43,9 @@ target_compile_definitions(orbis PRIVATE
 add_custom_command(TARGET orbis POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:orbis>/data"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${PROJECT_SOURCE_DIR}/data/earth_etopo10.oeg" "$<TARGET_FILE_DIR:orbis>/data/"
-    COMMENT "Copying Earth elevation data"
+            "${PROJECT_SOURCE_DIR}/data/earth_etopo10.oeg"
+            "${PROJECT_SOURCE_DIR}/data/earth_landcover.olc" "$<TARGET_FILE_DIR:orbis>/data/"
+    COMMENT "Copying Earth elevation and land cover data"
     VERBATIM)
 orbis_configure_target(orbis)
 

@@ -28,19 +28,50 @@ double smoothstep(double edge0, double edge1, double x) {
 }
 } // namespace
 
-EarthTerrain::EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed)
+EarthTerrain::EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed,
+                           std::shared_ptr<const HighResolutionTerrain> highResolution)
     : grid_(std::move(grid)), relief_(grid_.reliefMap(kReliefSmoothing)), ellipsoid_(ellipsoid),
       dataSpacing_(grid_.nodeSpacing(0, kMeanRadius)), detail_(seed),
-      alpine_(seed ^ 0x5DEECE66DF00D123ull) {}
+      alpine_(seed ^ 0x5DEECE66DF00D123ull), highResolution_(std::move(highResolution)) {}
+
+EarthTerrain::EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed,
+                           std::optional<ElevationGrid> highResolution)
+    : EarthTerrain(std::move(grid), ellipsoid, seed,
+                   highResolution ? std::make_shared<const HgtMosaicTerrain>(std::move(*highResolution))
+                                  : std::shared_ptr<const HighResolutionTerrain>{}) {}
 
 double EarthTerrain::elevation(const Vec3d& dir, double sampleSpacing) const {
     // Direction from the centre -> point on the ellipsoid -> GEODETIC latitude, which is what
-    // the grid is indexed by. For a point on the surface: tan(lat) = z / ((1 - e^2) * p).
+    // the grids are indexed by. For a point on the surface: tan(lat) = z / ((1 - e^2) * p).
     const Vec3d p = ellipsoid_.surfacePointAlong(dir);
     const double horizontal = std::sqrt(p.x * p.x + p.y * p.y);
     const double latitude = std::atan2(p.z, (1.0 - ellipsoid_.eccentricitySquared()) * horizontal);
     const double longitude = std::atan2(p.y, p.x);
 
+    if (highResolution_) {
+        const auto real = highResolution_->sample(latitude, longitude, sampleSpacing);
+        if (real && real->weight > 0.0) {
+            // Only the tiniest detail is synthetic here: below the tile resolution, a few metres.
+            const double maxFrequency = sampleSpacing > 0.0
+                                            ? kMeanRadius / (2.0 * sampleSpacing)
+                                            : std::numeric_limits<double>::infinity();
+            const double base = kMeanRadius / (2.0 * real->spacing);
+            const double fine = fbm(detail_, dir * base, {.octaves = 10, .lacunarity = 2.0, .gain = 0.5},
+                                    maxFrequency / base) *
+                                (2.0 + 0.05 * real->spacing);
+            const double detailed = real->height + fine;
+            if (real->weight >= 1.0) {
+                return detailed;
+            }
+            const double outside = baseElevation(dir, latitude, longitude, sampleSpacing);
+            return outside + real->weight * (detailed - outside);
+        }
+    }
+    return baseElevation(dir, latitude, longitude, sampleSpacing);
+}
+
+double EarthTerrain::baseElevation(const Vec3d& dir, double latitude, double longitude,
+                                   double sampleSpacing) const {
     // 1. Measured relief, pre-filtered to what the mesh can show: if vertices are 4 data cells
     //    apart, read from the mip level whose nodes are 4 cells apart (level 2).
     const double level = sampleSpacing > 0.0 ? std::max(std::log2(sampleSpacing / dataSpacing_), 0.0)
@@ -91,10 +122,19 @@ double EarthTerrain::elevation(const Vec3d& dir, double sampleSpacing) const {
         alpine = layers * std * mountains;
     }
 
-    const double result = measured + landFactor * (detail * roughness + alpine);
+    const double offset = landFactor * (detail * roughness + alpine);
     // Where the DATA says land, synthetic detail must not create sea: otherwise every lowland a
     // few metres above sea level fills with puddles. (The other way round is allowed and gives
     // natural, fractal coastlines: shallow sea floor may rise into small islands.)
+    // The limit is SOFT: a hard max(result, 0.5) cut every deep synthetic valley in the
+    // foothills into a flat terrace at sea level, which rendered as inland "beaches". Instead,
+    // downward offsets are compressed exponentially towards the floor - unchanged for small
+    // offsets (slope 1 at 0), never reaching it, C1-smooth everywhere.
+    if (measured > 0.0 && offset < 0.0) {
+        const double room = std::max(measured - 0.5, 1e-3);
+        return measured - room * (1.0 - std::exp(offset / room));
+    }
+    const double result = measured + offset;
     return measured > 0.0 ? std::max(result, 0.5) : result;
 }
 

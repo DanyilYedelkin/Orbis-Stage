@@ -37,6 +37,15 @@ inline constexpr int kTransmittanceLutHeight = 64;
 inline constexpr int kMultiScatteringLutSize = 32;
 inline constexpr int kTransmittanceSteps = 40; ///< Used identically on CPU and GPU.
 
+/// Sky irradiance table: x = sun cosine-of-zenith in [-1, 1], y = altitude, linear.
+inline constexpr int kIrradianceLutWidth = 64;
+inline constexpr int kIrradianceLutHeight = 16;
+/// Integration of the sky over the hemisphere: cosine-weighted stratified directions
+/// (zenith x azimuth strata) and steps per view ray. Used identically on CPU and GPU.
+inline constexpr int kIrradianceZenithSamples = 16;
+inline constexpr int kIrradianceAzimuthSamples = 16;
+inline constexpr int kIrradianceSteps = 32;
+
 /// Extinction coefficient (1/km) at an altitude above the ground (km).
 Vec3d extinctionAt(const AtmosphereParameters& p, double altitude);
 
@@ -57,6 +66,28 @@ struct RadiusMu {
 RadiusMu transmittanceUnitToRMu(const AtmosphereParameters& p, double xMu, double xR);
 void transmittanceRMuToUnit(const AtmosphereParameters& p, double r, double mu, double& xMu,
                             double& xR);
+
+/// Phase functions: Rayleigh, and Cornette-Shanks for Mie (Henyey-Greenstein with a better
+/// backward lobe). Both integrate to 1 over the sphere.
+double rayleighPhase(double cosTheta);
+double miePhase(const AtmosphereParameters& p, double cosTheta);
+
+/// Sunlight (for a sun of illuminance 1) reaching radius r with the sun at cosine-of-zenith
+/// muSun: transmittance to the top of the atmosphere, softly cut by the planet's shadow over
+/// the sun's ~0.5 degree disk. The CPU twin of sunTransmittance() in atmosphere.glsl.
+Vec3d sunTransmittance(const AtmosphereParameters& p, double r, double muSun);
+
+/// Irradiance on a HORIZONTAL surface at radius r from the sky alone (no direct sun), for a sun
+/// of illuminance 1, from SINGLE scattering: E = integral over the upper hemisphere of L cos.
+/// The reference the GPU table is validated against (the GPU adds multiple scattering on top,
+/// which needs its own table and has no cheap CPU twin).
+Vec3d skyIrradianceSingleScattering(const AtmosphereParameters& p, double r, double muSun,
+                                    int zenithSamples = kIrradianceZenithSamples,
+                                    int azimuthSamples = kIrradianceAzimuthSamples,
+                                    int steps = kIrradianceSteps);
+
+/// Irradiance table texel (x, y) <-> (r, muSun). Texel centres sit on both ends of each axis.
+RadiusMu irradianceTexelToRMu(const AtmosphereParameters& p, int x, int y);
 
 /// GLSL source with every parameter as a constant, plus the mapping from planet-centred metres
 /// on `ellipsoid` to the spherical atmosphere in km (scale z by a/b, then by bottomRadius/a).

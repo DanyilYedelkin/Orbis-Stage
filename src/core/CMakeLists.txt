@@ -9,11 +9,17 @@ add_library(orbis_core STATIC
     terrain/HeightField.cpp
     terrain/ElevationGrid.cpp
     terrain/EarthTerrain.cpp
+    terrain/HgtTiles.cpp
+    terrain/HighResolutionTerrain.cpp
+    terrain/HgtTileStreamer.cpp
+    terrain/LandCover.cpp
+    terrain/DetailNoise.cpp
     terrain/ChunkMesh.cpp
     terrain/Quadtree.cpp
     terrain/ChunkBuilder.cpp
     scene/Camera.cpp
-    atmosphere/AtmosphereModel.cpp)
+    atmosphere/AtmosphereModel.cpp
+    atmosphere/Clouds.cpp)
 add_library(orbis::core ALIAS orbis_core)
 
 # Includes are written as "core/..." so their origin is obvious at a glance.

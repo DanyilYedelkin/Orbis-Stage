@@ -108,6 +108,17 @@ void Application::buildDebugPanel(double dt) {
         ImGui::Text("build queue %zu (+%zu running)", st.pendingBuilds, st.runningBuilds);
         ImGui::Text("nodes visited %d, culled %d frustum / %d horizon", st.visited,
                     st.frustumCulled, st.horizonCulled);
+        if (st.staleChunks > 0) {
+            ImGui::Text("rebuilding %zu chunks for new tile data", st.staleChunks);
+        }
+        if (tiles_) {
+            const HgtTileStreamer::Stats ts = tiles_->stats();
+            ImGui::Text("hgt tiles %zu / %zu loaded, %.0f MB", ts.loaded, ts.available,
+                        static_cast<double>(ts.bytes) / (1024.0 * 1024.0));
+            ImGui::Text("tile loads %llu, evictions %llu, pending %zu",
+                        static_cast<unsigned long long>(ts.loads),
+                        static_cast<unsigned long long>(ts.evictions), ts.pending);
+        }
     }
 
     // ---- LOD controls
@@ -121,6 +132,8 @@ void Application::buildDebugPanel(double dt) {
         ImGui::Checkbox("LOD colours", &drawSettings_.showLodLevels);
         ImGui::Checkbox("wireframe", &drawSettings_.wireframe);
         ImGui::SameLine();
+        ImGui::Checkbox("surface detail", &drawSettings_.surfaceDetail);
+        ImGui::SameLine();
         bool frozen = frozenLodCamera_.has_value();
         if (ImGui::Checkbox("freeze LOD", &frozen)) {
             toggleFreeze();
@@ -133,6 +146,15 @@ void Application::buildDebugPanel(double dt) {
         changed |= sliderDouble("elevation", sunElevation_, -10.0f, 90.0f, "%.0f deg");
         ImGui::SliderFloat("intensity", &drawSettings_.sunIlluminance, 1.0f, 20.0f, "%.1f");
         ImGui::Checkbox("shadows", &drawSettings_.shadows);
+        ImGui::SameLine();
+        ImGui::Checkbox("clouds", &drawSettings_.clouds);
+        if (landCover_) {
+            ImGui::SameLine();
+            ImGui::Checkbox("land cover data", &drawSettings_.landCover);
+        }
+        if (drawSettings_.clouds) {
+            ImGui::SliderFloat("cloud cover", &clouds_.coverage, 0.0f, 1.0f, "%.2f");
+        }
         if (changed) {
             // Relative to where the camera is NOW: "sun in the south-west at 20 degrees" means
             // the same thing anywhere on the planet.

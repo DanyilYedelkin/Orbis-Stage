@@ -4,6 +4,7 @@
 
 uniform sampler2D uTransmittanceLut;
 uniform sampler2D uMultiScatteringLut;
+uniform sampler2D uIrradianceLut;
 
 const float kPi = 3.14159265358979;
 
@@ -66,6 +67,15 @@ vec3 multipleScattering(float r, float muSun) {
                    unitToTexCoord(clamp((r - kBottomRadius) / (kTopRadius - kBottomRadius), 0.0, 1.0),
                                   kMultiScatteringSize));
     return texture(uMultiScatteringLut, uv).rgb;
+}
+
+// Sky irradiance on a HORIZONTAL surface at radius r, for a sun of illuminance 1 (no direct
+// sunlight in it). See irradiance.comp.
+vec3 skyIrradiance(float r, float muSun) {
+    vec2 uv = vec2(unitToTexCoord(muSun * 0.5 + 0.5, kIrradianceSize.x),
+                   unitToTexCoord(clamp((r - kBottomRadius - 0.001) / (kTopRadius - kBottomRadius - 0.002),
+                                        0.0, 1.0), kIrradianceSize.y));
+    return texture(uIrradianceLut, uv).rgb;
 }
 
 float rayleighPhase(float c) { return 3.0 / (16.0 * kPi) * (1.0 + c * c); }

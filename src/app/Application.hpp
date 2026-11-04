@@ -1,7 +1,10 @@
 #pragma once
 
 #include "app/Atmosphere.hpp"
+#include "app/Clouds.hpp"
+#include "app/ToneMap.hpp"
 #include "app/DebugUi.hpp"
+#include "app/LandCoverTexture.hpp"
 #include "app/ShadowCascades.hpp"
 #include "app/Sky.hpp"
 #include "app/Terrain.hpp"
@@ -10,6 +13,7 @@
 #include "core/geo/Ellipsoid.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/terrain/ElevationSource.hpp"
+#include "core/terrain/HgtTileStreamer.hpp"
 
 #include <array>
 #include <cstddef>
@@ -25,6 +29,10 @@ enum class World { Earth, Procedural };
 struct AppOptions {
     World world = World::Earth;
     std::optional<std::string> elevationFile; ///< Overrides the bundled Earth data.
+    std::optional<std::string> hgtDirectory;  ///< High-resolution .hgt tiles (default: data/hgt).
+    std::size_t tileBudgetMb = 1536;          ///< Memory for streamed tiles.
+    std::optional<std::string> landCoverFile; ///< Overrides the bundled land cover map.
+    bool landCover = true;                    ///< false: colours stylised by latitude.
     int width = 1600;
     int height = 900;
     std::optional<std::string> screenshotPath; ///< Render one frame, save it, exit (for CI).
@@ -32,6 +40,9 @@ struct AppOptions {
     bool showUi = true;                        ///< Debug panel (off by default for screenshots).
     bool geomorph = true;
     bool shadows = true;
+    bool surfaceDetail = true; ///< Per-pixel surface detail (off: smooth shading, for comparison).
+    bool clouds = true;
+    double cloudCoverage = 0.35; ///< 0 clear .. 1 overcast.
     double fovDegrees = 45.0;  ///< Vertical field of view.
     bool viewAboveGround = false; ///< --view altitude measured from the terrain, not sea level.
     int recordFrames = 0;      ///< With screenshotPath: fly forward, save this many frames.
@@ -54,6 +65,13 @@ struct AppOptions {
     double sunElevation = 30.0;
 };
 
+/// Builds the elevation source for the options (Earth with optional .hgt tiles, or procedural).
+/// Also used without a window, e.g. by --check-alps.
+/// `tiles` (optional) receives the tile streamer, if there are high-resolution tiles.
+std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& options,
+                                                           const Ellipsoid& ellipsoid,
+                                                           std::shared_ptr<HgtTileStreamer>* tiles = nullptr);
+
 /// Edge detector for a key: true only on the frame it goes down.
 class KeyToggle {
 public:
@@ -75,6 +93,7 @@ public:
 private:
     void handleInput(double dt);
     void updateTerrain(std::size_t maxUploads);
+    void updateTiles(); ///< Drives tile streaming; rebuilds the chunks over tiles that changed.
     void settleTerrain(); ///< Stream until the LOD for the current view is complete.
     /// Terrain height (m) under an ECEF point, at ~1 m detail - what the finest LOD shows.
     double groundHeightAt(const Vec3d& ecef) const;
@@ -89,6 +108,7 @@ private:
     void goTo(const AppOptions::View& view, double sunAzimuth, double sunElevation);
     void setSun(double latitude, double longitude); ///< From sunAzimuth_/sunElevation_, radians.
     void toggleFreeze();
+    void loadLandCover(); ///< Earth only: reads the map, separates lakes from the sea, uploads.
 
     AppOptions options_;
 
@@ -99,14 +119,18 @@ private:
     Window window_;
     DebugUi ui_; ///< Needs the GL context, so right after the window.
     Ellipsoid ellipsoid_ = Ellipsoid::wgs84();
+    std::shared_ptr<HgtTileStreamer> tiles_; ///< Before elevation_ (which samples it): dies after.
     std::unique_ptr<const ElevationSource> elevation_;
     bool isEarth_ = false;
+    std::optional<LandCoverTexture> landCover_; ///< Earth only; GPU texture, needs the context.
     Camera camera_{ellipsoid_};
     gl::RenderTarget renderTarget_;
     Atmosphere atmosphere_; ///< Before Sky and Terrain: their shaders are built from its prelude.
     Sky sky_;
+    Clouds clouds_; ///< Before Terrain: its shader samples the clouds for their shadows.
     Terrain terrain_;
     ShadowCascades shadows_;
+    ToneMap toneMap_;
     TerrainDrawSettings drawSettings_;
 
     // Debug: when set, LOD selection uses this camera while you fly around with the real one,

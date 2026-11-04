@@ -60,7 +60,9 @@ BoundingSphere TerrainLod::bounds(const NodeKey& key, const HeightRange& heights
 }
 
 HeightRange TerrainLod::subtreeRange(const NodeKey& key, const HeightRange& meshRange) const {
-    const double margin = 2.0 * vertexSpacing(key);
+    // 3 vertex spacings: covers slopes up to ~70 degrees between vertices - real high-resolution
+    // mountain data has cliffs steeper than anything the procedural terrain makes.
+    const double margin = 3.0 * vertexSpacing(key);
     return {std::max(meshRange.min - margin, 0.0),
             std::min(meshRange.max + margin, kMaxTerrainElevation)};
 }

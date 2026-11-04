@@ -81,6 +81,9 @@ jobs:
           eval $RUN --world procedural --view 0.30,-140.75,6.5,45,-10 --screenshot procedural.ppm
           eval $RUN --world procedural --view 0.30,-140.75,6.5,45,-10 --lod-colors --screenshot lod-levels.ppm
           eval $RUN --view 44.3,8.6,70,5,-22 --show-ui --screenshot debug-panel.ppm
+          eval $RUN --view 47.5,8.0,0.5,250,12 --sun 220,35 --above-ground --screenshot clouds.ppm
+          eval $RUN --view 46.5,8.0,3.5,250,2 --sun 250,3 --screenshot sunset.ppm
+          eval $RUN --view 46.4,8.0,0.03,200,-15 --above-ground --sun 250,25 --screenshot surface-detail.ppm
       - uses: actions/upload-artifact@v4
         with:
           name: frames

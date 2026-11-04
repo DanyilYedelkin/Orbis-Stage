@@ -42,5 +42,5 @@ void main() {
     float disk = smoothstep(0.99996, 0.99999, dot(dirWorld, uSunDirection));
     color += viewTransmittance * disk * uSunIlluminance * 6.0;
 
-    fragColor = vec4(toDisplay(color), 1.0);
+    fragColor = vec4(color, 1.0); // linear HDR: tone mapping happens in tonemap.frag
 }

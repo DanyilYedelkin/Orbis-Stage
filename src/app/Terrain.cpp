@@ -1,6 +1,8 @@
 #include "app/Terrain.hpp"
 
 #include "EmbeddedShaders.hpp"
+#include "app/Clouds.hpp"
+#include "app/LandCoverTexture.hpp"
 #include "app/ShadowCascades.hpp"
 #include "app/gl/ShaderSource.hpp"
 
@@ -16,13 +18,19 @@ namespace orbis {
 namespace {
 constexpr std::size_t kMaxResidentChunks = 3000;   // ~100 MB of vertex data at 32 quads/edge
 constexpr std::uint64_t kEvictAfterFrames = 600;   // ~10 s unused at 60 fps
+constexpr std::uint64_t kDetailSeed = 0x0DE7A11u;
+constexpr double kDetailPeriod = 256.0; // = kDetailPeriod in terrain.frag
+
+/// x mod period in [0, period), in double: the camera's position within the detail period.
+double positiveModulo(double x, double period) { return x - std::floor(x / period) * period; }
 } // namespace
 
 Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
-                 const LodSettings& settings, const Atmosphere& atmosphere)
-    : ellipsoid_(ellipsoid), lod_(ellipsoid, settings),
+                 const LodSettings& settings, const Atmosphere& atmosphere, const Clouds& clouds)
+    : ellipsoid_(ellipsoid), lod_(ellipsoid, settings), clouds_(&clouds), detail_(kDetailSeed),
       shader_(shaders::terrain_vert,
-              gl::composeShader(std::string(shaders::common_glsl) + atmosphere.shaderPrelude(),
+              gl::composeShader(std::string(shaders::common_glsl) + atmosphere.shaderPrelude() +
+                                    clouds.shaderPrelude(),
                                 shaders::terrain_frag),
               "terrain"),
       indexBuffer_(gl::createBuffer()),
@@ -30,12 +38,21 @@ Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
       // sources are immutable after construction, so concurrent reads are safe.
       builder_(
           [ellipsoid, &elevation, n = settings.quadsPerEdge](const NodeKey& key) {
-              return buildChunkMesh(key.region(), n, ellipsoid, elevation);
+              // The version BEFORE building: if data arrives mid-build, the mesh may or may not
+              // contain it, so it counts as the older version (and is rebuilt if needed).
+              const std::uint64_t version = elevation.version();
+              ChunkMesh mesh = buildChunkMesh(key.region(), n, ellipsoid, elevation);
+              mesh.dataVersion = version;
+              return mesh;
           },
           ChunkBuilder::defaultThreadCount()) {
     shader_.set("uTransmittanceLut", 0);
     shader_.set("uMultiScatteringLut", 1);
+    shader_.set("uIrradianceLut", static_cast<int>(Atmosphere::kIrradianceUnit));
     shader_.set("uShadowMap", 2);
+    shader_.set("uLandCover", 3);
+    shader_.set("uDetailNoise", 4);
+    shader_.set("uDetailGradientScale", 1.0f / detail_.gradientStd());
     const std::vector<std::uint16_t> indices = buildChunkIndices(settings.quadsPerEdge);
     indexCount_ = static_cast<GLsizei>(indices.size());
     trianglesPerChunk_ = indices.size() / 3;
@@ -47,7 +64,11 @@ Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
 
 void Terrain::upload(const NodeKey& key, const ChunkMesh& mesh) {
     GpuChunk chunk{gl::createVertexArray(), gl::createBuffer(), mesh.origin,
-                   HeightRange{mesh.minHeight, mesh.maxHeight}, frame_, key.level};
+                   HeightRange{mesh.minHeight, mesh.maxHeight}, frame_, key.level,
+                   mesh.boundingRadius, mesh.dataVersion, 0};
+    if (const auto old = chunks_.find(key); old != chunks_.end()) {
+        chunk.requiredVersion = old->second.requiredVersion; // a rebuild may still be too old
+    }
     glNamedBufferStorage(chunk.vertices.get(),
                          static_cast<GLsizeiptr>(mesh.vertices.size() * sizeof(TerrainVertex)),
                          mesh.vertices.data(), 0);
@@ -103,7 +124,15 @@ void Terrain::update(const Camera& lodCamera, int viewportWidth, int viewportHei
         chunks_.at(key).lastUsedFrame = frame_;
     }
 
-    // 3. Request what is missing.
+    // 3. Request what is missing - and rebuilds of drawn chunks whose data changed (streamed
+    //    tiles), behind anything missing: a hole-free image first, then the sharper data.
+    std::size_t stale = 0;
+    for (const NodeKey& key : selection.draw) {
+        if (chunks_.at(key).stale()) {
+            selection.requests.push_back({key, 0.5 * lod_.settings().maxPixelError});
+            ++stale;
+        }
+    }
     lastSelectionComplete_ = selection.requests.empty();
     builder_.schedule(std::move(selection.requests));
 
@@ -121,6 +150,7 @@ void Terrain::update(const Camera& lodCamera, int viewportWidth, int viewportHei
     stats_ = {
         .drawnChunks = drawList_.size(),
         .residentChunks = chunks_.size(),
+        .staleChunks = stale,
         .pendingBuilds = builder_.pendingCount(),
         .runningBuilds = builder_.runningCount(),
         .drawnTriangles = drawList_.size() * trianglesPerChunk_,
@@ -159,6 +189,22 @@ void Terrain::evict() {
 }
 
 bool Terrain::settled() const { return lastSelectionComplete_ && builder_.idle(); }
+
+void Terrain::invalidate(const Vec3d& centre, double angularRadius, std::uint64_t version,
+                         double coarsestAffected) {
+    for (auto& [key, chunk] : chunks_) {
+        if (lod_.vertexSpacing(key) > coarsestAffected) {
+            continue; // coarse levels do not use the data that changed
+        }
+        // Two caps on the sphere overlap if their centres are closer than the sum of the radii.
+        const double distance = length(chunk.origin);
+        const double chunkRadius = std::asin(std::min(chunk.boundingRadius / distance, 1.0));
+        const double between = std::acos(std::clamp(dot(chunk.origin / distance, centre), -1.0, 1.0));
+        if (between < angularRadius + chunkRadius) {
+            chunk.requiredVersion = std::max(chunk.requiredVersion, version);
+        }
+    }
+}
 
 void Terrain::drawChunks(const gl::ShaderProgram& program, const Vec3d& viewOrigin,
                          bool withDebugLevel) const {
@@ -211,6 +257,19 @@ void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings
     shader_.set("uShowLodLevels", settings.showLodLevels ? 1 : 0);
     shader_.set("uMorphEnabled", settings.geomorph ? 1 : 0);
     shader_.set("uSunIlluminance", settings.sunIlluminance);
+
+    clouds_->bind(shader_, camera, settings.clouds);
+    shader_.set("uSurfaceDetail", settings.surfaceDetail ? 1 : 0);
+    shader_.set("uDetailOrigin", Vec3f{static_cast<float>(positiveModulo(cameraPos.x, kDetailPeriod)),
+                                       static_cast<float>(positiveModulo(cameraPos.y, kDetailPeriod)),
+                                       static_cast<float>(positiveModulo(cameraPos.z, kDetailPeriod))});
+    detail_.bind(4);
+
+    const bool landCover = settings.landCover && landCover_ != nullptr;
+    shader_.set("uLandCoverEnabled", landCover ? 1 : 0);
+    if (landCover) {
+        landCover_->bind(3);
+    }
 
     shader_.set("uShadowsEnabled", shadows != nullptr ? 1 : 0);
     if (shadows != nullptr) {

@@ -19,8 +19,14 @@ public:
 
     /// GLSL prelude for every shader that uses the atmosphere: generated constants + functions.
     const std::string& shaderPrelude() const { return prelude_; }
+    const AtmosphereParameters& parameters() const { return parameters_; }
 
-    /// Binds the tables to texture units 0 (transmittance) and 1 (multiple scattering).
+    /// Texture unit of the sky irradiance table (0 and 1 are transmittance / multiple
+    /// scattering; units in between belong to the passes).
+    static constexpr unsigned kIrradianceUnit = 5;
+
+    /// Binds the tables to texture units 0 (transmittance), 1 (multiple scattering) and
+    /// kIrradianceUnit (sky irradiance).
     void bind() const;
 
     /// Reads the transmittance table back from the GPU and compares it with the CPU reference
@@ -28,11 +34,23 @@ public:
     /// otherwise only show up as "the sunset looks a bit off".
     double validateAgainstCpu() const;
 
+    /// The irradiance table is validated while it is built: the GPU computes it once with
+    /// single scattering only and compares with skyIrradianceSingleScattering() on the CPU.
+    /// Largest difference relative to the table's maximum.
+    double irradianceValidationError() const { return irradianceError_; }
+    /// How much multiple scattering adds to the sky irradiance at noon on the ground (ratio).
+    double multipleScatteringGain() const { return multipleScatteringGain_; }
+
 private:
+    void computeIrradiance(const gl::Texture& target, bool multipleScattering) const;
+
     AtmosphereParameters parameters_;
     std::string prelude_;
     gl::Texture transmittance_;
     gl::Texture multiScattering_;
+    gl::Texture irradiance_;
+    double irradianceError_ = 0.0;
+    double multipleScatteringGain_ = 1.0;
 };
 
 } // namespace orbis
