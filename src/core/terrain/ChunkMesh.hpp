@@ -19,59 +19,44 @@ struct FaceRegion {
     double size = 2.0;
 };
 
-/// Exactly what the GPU receives per vertex: 40 bytes.
-///
-/// Every vertex carries TWO states for geomorphing (smooth LOD transitions): its own, and where
-/// it would be on the PARENT's coarser surface. The vertex shader blends between them by
-/// distance, so a chunk that just replaced its parent looks exactly like the parent and only
-/// grows its own detail as the camera approaches - no "pop".
+/// GPU vertex. Carries its own state and the parent's surface at the same point; the vertex
+/// shader morphs between them by distance so LOD switches do not pop.
 struct TerrainVertex {
-    Vec3f position;            ///< Metres, relative to ChunkMesh::origin - SMALL numbers, float-safe.
-    Vec3f morphDelta;          ///< Parent-surface position minus `position`.
-    std::uint32_t normal;      ///< Unit normal (ECEF-aligned), packed snorm 10:10:10:2.
-    std::uint32_t morphNormal; ///< Normal of the parent surface at this point, packed.
-    float elevation;           ///< Metres, unclamped (negative = ocean floor), for colouring.
-    float morphElevation;      ///< The parent's elevation at this point.
+    Vec3f position;            ///< Relative to ChunkMesh::origin.
+    Vec3f morphDelta;          ///< Parent position minus `position`.
+    std::uint32_t normal;      ///< ECEF, packNormal().
+    std::uint32_t morphNormal;
+    float elevation;           ///< Unclamped, for shading.
+    float morphElevation;
 };
 static_assert(sizeof(TerrainVertex) == 40, "unexpected padding");
 static_assert(std::is_standard_layout_v<TerrainVertex>, "offsetof() must be valid");
 
-/// Unit vector -> GL_INT_2_10_10_10_REV (normalised). 10 bits per axis is ~0.1 degree: plenty for
-/// shading, and 4 bytes instead of 12.
+/// GL_INT_2_10_10_10_REV, normalised.
 std::uint32_t packNormal(const Vec3d& n);
 Vec3f unpackNormal(std::uint32_t packed);
 
-/// CPU-side mesh of one chunk. Pure data: no OpenGL here, so it is unit-testable and is built on
-/// worker threads.
-///
-/// Vertex layout:
-///   [0, (n+1)^2)              the surface grid, row-major, u fastest: index = j * (n+1) + i
-///   [(n+1)^2, (n+1)^2 + 4n)   the SKIRT: one vertex below every border vertex, in the order of
-///                             boundaryGridIndex(k)
+/// Vertices: the (n+1)^2 grid, row-major with u fastest, then one skirt vertex per border
+/// vertex in boundaryGridIndex() order.
 struct ChunkMesh {
     FaceRegion region;
-    Vec3d origin;                ///< ECEF anchor all vertex positions are relative to.
-    double boundingRadius = 0.0; ///< Sphere around origin containing every SURFACE vertex.
-    double minHeight = 0.0;      ///< Lowest surface point (own or morph target), metres, >= 0.
-    double maxHeight = 0.0;      ///< Highest surface point (own or morph target).
-    /// ElevationSource::version() when the build started: data that changed later (streamed
-    /// tiles) is not in this mesh.
-    std::uint64_t dataVersion = 0;
+    Vec3d origin;                ///< ECEF.
+    double boundingRadius = 0.0; ///< Surface vertices only.
+    double minHeight = 0.0;      ///< Over own and morph positions, clamped at 0.
+    double maxHeight = 0.0;
+    std::uint64_t dataVersion = 0; ///< ElevationSource::version() when the build started.
     std::vector<TerrainVertex> vertices;
 };
 
-/// Approximate distance between neighbouring vertices of a chunk, in metres.
 double chunkVertexSpacing(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid);
 
-/// How far skirts hang below the border. Must exceed the largest crack between neighbouring LOD
-/// levels; too deep is harmless (skirts are hidden under the terrain).
+/// Must exceed the largest crack between LOD levels; deeper is harmless.
 double chunkSkirtDepth(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid);
 
 ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid,
                          const ElevationSource& terrain);
 
-/// Triangle indices for grid + skirt. Identical for every chunk with the same resolution, so one
-/// index buffer is shared by all chunks on the GPU. 16-bit indices halve its size.
+/// Same for every chunk of a resolution: one shared index buffer.
 std::vector<std::uint16_t> buildChunkIndices(int quadsPerEdge);
 
 constexpr int chunkGridVertexCount(int n) { return (n + 1) * (n + 1); }
@@ -80,12 +65,10 @@ constexpr int chunkVertexCount(int n) { return chunkGridVertexCount(n) + chunkSk
 constexpr int chunkGridIndexCount(int n) { return n * n * 6; }
 constexpr int chunkSkirtIndexCount(int n) { return 4 * n * 6; }
 
-/// Grid index of the k-th border vertex, k in [0, 4n). The border is walked counter-clockwise
-/// as seen from outside the planet: bottom edge (+u), right edge (+v), top edge (-u), left (-v).
+/// k in [0, 4n), counter-clockwise seen from outside: bottom, right, top, left edge.
 int boundaryGridIndex(int k, int quadsPerEdge);
 
-/// Must be EVEN: every second vertex of a child then coincides with a parent vertex, which is
-/// what geomorphing relies on. 250 keeps grid + skirt within 16-bit indices.
+/// quadsPerEdge must be even so every other child vertex is a parent vertex (geomorphing).
 inline constexpr int kMaxQuadsPerEdge = 250;
 static_assert(chunkVertexCount(kMaxQuadsPerEdge) <= 65536);
 

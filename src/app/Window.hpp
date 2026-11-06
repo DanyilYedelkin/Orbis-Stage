@@ -14,11 +14,8 @@ struct WindowConfig {
     bool debugContext = false;
 };
 
-/// GLFW window + OpenGL 4.5 core context (RAII). Owns GLFW's global init/terminate, so exactly
-/// one Window may exist - enough for this app and it keeps the lifetime rules obvious.
-///
-/// IMPORTANT: every GL object must be destroyed BEFORE the Window (the context dies with it).
-/// Application declares the Window as its first member, so C++ destroys it last.
+/// GLFW window with a GL 4.5 core context. Owns glfwInit/glfwTerminate, so only one may exist.
+/// GL objects must be destroyed before it.
 class Window {
 public:
     explicit Window(const WindowConfig& config);
@@ -41,7 +38,7 @@ public:
     void setTitle(const std::string& title);
     void setCursorCaptured(bool captured);
 
-    /// Mouse-wheel movement accumulated since the last call.
+    /// Since the last call.
     double consumeScroll();
 
 private:

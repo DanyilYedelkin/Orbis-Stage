@@ -12,13 +12,8 @@ namespace orbis {
 
 class Terrain;
 
-/// Cascaded shadow maps for the sun.
-///
-/// One shadow map cannot cover both the rocks at your feet and a mountain 30 km away, so the
-/// view is split into distance ranges, each with its own map (same resolution, growing area).
-/// Everything is camera-relative like the main pass; only the snapping to the texel grid is done
-/// in world (ECEF) double precision - that is what stops the shadow edges from crawling when the
-/// camera moves.
+/// Sun shadow cascades. Camera-relative like the main pass, but snapped to the texel grid in
+/// ECEF doubles so the edges do not crawl as the camera moves.
 class ShadowCascades {
 public:
     static constexpr int kCascades = 3;
@@ -26,13 +21,11 @@ public:
 
     ShadowCascades();
 
-    /// Fits the cascades to the camera and renders the terrain's depth from the sun into them.
-    /// `groundHeight`: terrain height under the camera (metres), to size the cascades by the
-    /// camera's height above the ground rather than above sea level.
+    /// `groundHeight` under the camera sizes the cascades by height above ground.
     void render(const Camera& camera, float aspect, const Vec3d& sunDirection,
                 const Terrain& terrain, bool geomorph, double groundHeight);
 
-    /// Binds the shadow map array to texture unit 2.
+    /// Texture unit 2.
     void bind() const;
 
     const std::array<Mat4f, kCascades>& lightMatrices() const { return lightMatrices_; }

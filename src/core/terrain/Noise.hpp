@@ -8,12 +8,10 @@
 
 namespace orbis {
 
-/// Ken Perlin's "improved noise" (2002) in 3D. Smooth, band-limited, output roughly [-1, 1].
+/// Perlin's improved noise (2002), output roughly [-1, 1].
 ///
-/// Deterministic across compilers and platforms: the permutation table is shuffled with our own
-/// SplitMix64 + Fisher-Yates instead of std::shuffle, whose algorithm is implementation-defined.
-/// Same seed => bit-identical terrain on MSVC and GCC, which matters for networked or replayed
-/// simulations where every machine must agree on the world.
+/// The permutation is shuffled with SplitMix64 + Fisher-Yates rather than std::shuffle (whose
+/// algorithm is implementation-defined), so a seed gives the same terrain on every compiler.
 struct NoiseSample {
     double value;
     Vec3d gradient; ///< d(value)/dp, analytic.
@@ -25,9 +23,7 @@ public:
 
     double sample(const Vec3d& p) const;
 
-    /// Value AND exact gradient in one evaluation (the derivative of the quintic fade and of the
-    /// corner gradients, after I. Quilez). Needed by erodedFbm(), which shapes each octave by the
-    /// slope accumulated so far.
+    /// Value and analytic gradient (after I. Quilez), for erodedFbm().
     NoiseSample sampleWithGradient(const Vec3d& p) const;
 
 private:
@@ -36,37 +32,24 @@ private:
 
 struct FbmParams {
     int octaves = 6;
-    double lacunarity = 2.0; ///< Frequency multiplier per octave.
-    double gain = 0.5;       ///< Amplitude multiplier per octave.
-    /// ridgedFbm only: rounds the crests. 0 = razor-sharp (a slope discontinuity along every
-    /// zero line of the noise); ~0.1-0.2 = rounded over that fraction of each octave's
-    /// wavelength, i.e. equally soft at every scale. Also smooths the octave weighting.
+    double lacunarity = 2.0;
+    double gain = 0.5;
+    /// ridgedFbm only: crest rounding as a fraction of each octave's wavelength (0 = sharp).
     double crestSoftness = 0.0;
 };
 
-/// Fractional Brownian motion: a sum of noise octaves, each finer and weaker. Normalised by the
-/// total amplitude so the output stays roughly in [-1, 1] for any octave count.
-///
-/// `maxFrequency` band-limits the sum (anti-aliasing): octaves above it are faded out, so a coarse
-/// LOD level does not sample detail it cannot represent (which would shimmer and pop). The
-/// normalisation always uses ALL octaves, so the low frequencies - the overall shape - are
-/// identical at every level of detail.
+/// Octaves above `maxFrequency` fade out (anti-aliasing for coarse LOD levels). Normalised by
+/// the amplitude of all octaves, so the large-scale shape is the same at every level.
 double fbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
            double maxFrequency = std::numeric_limits<double>::infinity());
 
-/// "Eroded" fBm on the sphere (after I. Quilez): each octave is damped by 1 / (1 + k |d|^2), where
-/// d is the slope accumulated by the previous octaves. Steep flanks therefore stay smooth while
-/// detail survives on ridges and valley floors - the look of terrain shaped by erosion: long
-/// clean slopes, sharp crests, flat-bottomed valleys. `unitDirection` is the point on the unit
-/// sphere; only the TANGENTIAL part of the gradient counts as slope. Output roughly [-1, 1].
+/// fBm on the unit sphere with each octave damped by 1 / (1 + k |d|^2), d the tangential slope
+/// accumulated so far (after I. Quilez): clean flanks, sharp crests, flat valley floors.
 double erodedFbm(const PerlinNoise& noise, const Vec3d& unitDirection, double base,
                  const FbmParams& params, double erosion,
                  double maxFrequency = std::numeric_limits<double>::infinity());
 
-/// Ridged multifractal (F. K. Musgrave): mountain ranges with sharp crests and smooth valleys.
-/// Each octave is (1 - |noise|)^2 - a crest where smooth noise crosses zero - and is weighted by
-/// the previous octave's signal, so detail piles up on ridges and stays out of valley floors.
-/// Output in [0, 1]. Band-limited and normalised like fbm().
+/// Ridged multifractal (Musgrave), output [0, 1]. Band-limited and normalised like fbm().
 double ridgedFbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
                  double maxFrequency = std::numeric_limits<double>::infinity());
 

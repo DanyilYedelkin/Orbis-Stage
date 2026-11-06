@@ -44,7 +44,6 @@ Atmosphere::Atmosphere(const AtmosphereParameters& parameters, const Ellipsoid& 
       transmittance_(createLut(kTransmittanceLutWidth, kTransmittanceLutHeight)),
       multiScattering_(createLut(kMultiScatteringLutSize, kMultiScatteringLutSize)),
       irradiance_(createLut(kIrradianceLutWidth, kIrradianceLutHeight)) {
-    // 1. Transmittance.
     {
         const auto program = gl::ShaderProgram::compute(
             gl::composeShader(prelude_, shaders::transmittance_comp), "transmittance");
@@ -52,10 +51,8 @@ Atmosphere::Atmosphere(const AtmosphereParameters& parameters, const Ellipsoid& 
         glBindImageTexture(0, transmittance_.get(), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
         glDispatchCompute(groups(kTransmittanceLutWidth), groups(kTransmittanceLutHeight), 1);
     }
-    // The next pass SAMPLES what the first one WROTE through an image: make the writes visible.
     glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
 
-    // 2. Multiple scattering (reads the transmittance table).
     {
         const auto program = gl::ShaderProgram::compute(
             gl::composeShader(prelude_, shaders::multiscattering_comp), "multiscattering");
@@ -67,8 +64,7 @@ Atmosphere::Atmosphere(const AtmosphereParameters& parameters, const Ellipsoid& 
     }
     glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
 
-    // 3. Sky irradiance (reads both tables). First single scattering only, checked against the
-    //    CPU reference; then the real table with multiple scattering.
+    // Single scattering first, checked against the CPU reference, then the real table.
     {
         const gl::Texture single = createLut(kIrradianceLutWidth, kIrradianceLutHeight);
         computeIrradiance(single, false);

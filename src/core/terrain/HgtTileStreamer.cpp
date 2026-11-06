@@ -22,7 +22,6 @@ double smoothstep(double edge0, double edge1, double x) {
 
 std::atomic<std::uint64_t> nextInstance{1};
 
-/// Bytes of a grid of n x n floats with its mip pyramid (~4/3).
 std::size_t gridBytes(int n) {
     const auto nodes = static_cast<std::size_t>(n) * static_cast<std::size_t>(n);
     return nodes * sizeof(float) * 4 / 3;
@@ -61,7 +60,7 @@ const HgtTileStreamer::Snapshot& HgtTileStreamer::currentSnapshot() const {
     if (cache.instance != instance_ || cache.version != v || !cache.snapshot) {
         const std::lock_guard lock(mutex_);
         cache.snapshot = snapshot_;
-        cache.version = snapshot_->version; // may be newer than v: that is fine
+        cache.version = snapshot_->version; // may be newer than v
         cache.instance = instance_;
     }
     return *cache.snapshot;
@@ -73,7 +72,7 @@ HgtTileStreamer::sample(double latitude, double longitude, double sampleSpacing)
         sampleSpacing > 0.0 ? 1.0 - smoothstep(settings_.requestSpacing, settings_.fadeSpacing, sampleSpacing)
                             : 1.0;
     if (spacingWeight <= 0.0) {
-        return std::nullopt; // coarse LOD: never depends on what is loaded
+        return std::nullopt;
     }
     const double latDeg = latitude / kDeg;
     const double lonDeg = longitude / kDeg;
@@ -81,7 +80,7 @@ HgtTileStreamer::sample(double latitude, double longitude, double sampleSpacing)
     const int lon = static_cast<int>(std::floor(lonDeg));
     const auto entry = index_.find(key(lat, lon));
     if (entry == index_.end()) {
-        return std::nullopt; // no such tile on disk
+        return std::nullopt;
     }
     Entry& e = entries_[entry->second];
     const std::uint64_t now = clock_.load(std::memory_order_relaxed);
@@ -95,8 +94,7 @@ HgtTileStreamer::sample(double latitude, double longitude, double sampleSpacing)
         }
         return std::nullopt;
     }
-    // Written only when it changes (once per frame per tile): no cache-line ping-pong between
-    // the worker threads.
+    // Store only on change, to avoid cache-line ping-pong between workers.
     if (e.used.load(std::memory_order_relaxed) != now) {
         e.used.store(now, std::memory_order_relaxed);
     }
@@ -114,8 +112,7 @@ HgtTileStreamer::sample(double latitude, double longitude, double sampleSpacing)
                              tile.coverage->sample(latitude, longitude,
                                                    static_cast<double>(tile.coverage->levelCount() - 1)));
     }
-    // Fade towards every neighbouring square without loaded data: distance from the point to
-    // that square (east-west degrees shrink with the cosine of the latitude).
+    // Fade towards every neighbouring square without loaded data.
     double nearestMissing = 1e9;
     const double cosLat = std::cos(latitude);
     for (int dLat = -1; dLat <= 1; ++dLat) {
@@ -140,8 +137,6 @@ HgtTileStreamer::sample(double latitude, double longitude, double sampleSpacing)
 std::size_t HgtTileStreamer::estimateBytes(const Entry& e) const { return gridBytes(e.file.samples); }
 
 bool HgtTileStreamer::isPending(const Entry& e, std::uint64_t now, const TileMap& loaded) const {
-    // Requests made while a load was in flight carry a later tick than the attempt; without the
-    // "not loaded" check they would load the same tile again.
     const std::uint64_t requested = e.requested.load(std::memory_order_relaxed);
     return requested != 0 && requested > e.attempted.load(std::memory_order_relaxed) &&
            requested + settings_.requestLifetime >= now && !e.failed.load(std::memory_order_relaxed) &&
@@ -161,8 +156,7 @@ std::shared_ptr<const HgtTileStreamer::Tile> HgtTileStreamer::load(const HgtTile
 }
 
 void HgtTileStreamer::publish(int k, std::shared_ptr<const Tile> tile, bool loaded, int lat, int lon) {
-    // Caller holds mutex_. Copy-on-write: readers keep using the old snapshot until they notice
-    // the new version; nothing they hold is ever modified.
+    // Caller holds mutex_. Copy-on-write: snapshots held by readers are never modified.
     auto next = std::make_shared<Snapshot>(*snapshot_);
     if (loaded) {
         if (const auto old = next->tiles.find(k); old != next->tiles.end()) {
@@ -183,7 +177,7 @@ void HgtTileStreamer::publish(int k, std::shared_ptr<const Tile> tile, bool load
 }
 
 HgtTileStreamer::Entry* HgtTileStreamer::pickRequest() {
-    // The most recently requested tile that fits the budget: it is where the camera is now.
+    // The most recent request is where the camera is now.
     const std::uint64_t now = clock_.load(std::memory_order_relaxed);
     Entry* best = nullptr;
     std::uint64_t bestTick = 0;
@@ -211,8 +205,7 @@ void HgtTileStreamer::loaderLoop(std::stop_token stop) {
         Entry* e = pickRequest();
         if (e == nullptr) {
             std::unique_lock lock(mutex_);
-            // Requests are lock-free atomic stores from the workers, so poll briefly instead of
-            // having every sample notify a condition variable.
+            // Polling, so that requests stay a plain atomic store on the sampling side.
             wake_.wait_for(lock, stop, std::chrono::milliseconds(5), [] { return false; });
             continue;
         }
@@ -233,8 +226,7 @@ void HgtTileStreamer::loaderLoop(std::stop_token stop) {
         if (tile) {
             publish(key(e->file.lat, e->file.lon), std::move(tile), true, e->file.lat, e->file.lon);
         }
-        // Requests that arrived while it was loading are satisfied too - otherwise, once the
-        // tile is evicted much later, they would bring it straight back.
+        // Requests made while loading are satisfied too, or an eviction would bring it back.
         e->attempted.store(clock_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         e->inFlight.store(false, std::memory_order_release);
         busy_ = false;
@@ -244,8 +236,7 @@ void HgtTileStreamer::loaderLoop(std::stop_token stop) {
 std::vector<HgtTileStreamer::Change> HgtTileStreamer::update() {
     const std::uint64_t now = clock_.fetch_add(1, std::memory_order_relaxed) + 1;
 
-    // Room needed for the most wanted pending tile. Without making room for it, a full budget
-    // would never admit a new tile, however far the camera moved.
+    // Make room for the most wanted pending tile, or a full budget would never admit one.
     const std::lock_guard lock(mutex_);
     std::size_t need = 0;
     std::uint64_t bestTick = 0;
@@ -259,7 +250,6 @@ std::vector<HgtTileStreamer::Change> HgtTileStreamer::update() {
     }
 
     if (bytes_ + need > settings_.memoryBudget) {
-        // Least recently used first; tiles used in the last keepTicks updates are kept.
         std::vector<std::pair<std::uint64_t, int>> candidates;
         for (const auto& [k, tile] : snapshot_->tiles) {
             const std::uint64_t used = entries_[index_.at(k)].used.load(std::memory_order_relaxed);

@@ -18,36 +18,26 @@
 namespace orbis {
 
 struct TileStreamingSettings {
-    std::size_t memoryBudget = std::size_t{1536} << 20; ///< Bytes of loaded tiles (+ pyramids).
-    /// Samples finer than this (metres between mesh vertices) REQUEST the tile they fall in.
+    std::size_t memoryBudget = std::size_t{1536} << 20; ///< Bytes, pyramids included.
+    /// Samples finer than this (metres) request their tile.
     double requestSpacing = 400.0;
-    /// Samples coarser than this never use tiles at all (blending in between). So coarse LOD
-    /// levels - most of the planet - do not depend on what happens to be loaded, and never
-    /// need rebuilding when tiles come and go.
+    /// Samples coarser than this ignore tiles, so coarse LOD never depends on what is loaded.
     double fadeSpacing = 800.0;
-    /// A tile used during the last `keepTicks` updates is never evicted (no thrashing).
+    /// Tiles used within this many updates are not evicted.
     std::uint64_t keepTicks = 120;
-    /// Requests not renewed for this many updates are dropped (the camera has moved on).
+    /// Requests not renewed for this many updates expire.
     std::uint64_t requestLifetime = 300;
 };
 
-/// High-resolution .hgt tiles, loaded ON DEMAND and evicted under a memory budget: whole-planet
-/// coverage with only the tiles around the camera in memory.
+/// .hgt tiles loaded on demand and evicted under a memory budget.
 ///
-/// Demand comes from the terrain itself: when a mesh worker samples a point at fine spacing
-/// inside a tile that exists on disk but is not loaded, sample() records a request (one relaxed
-/// atomic store) and returns "no data" - the mesh uses the base terrain for now. A loader thread
-/// reads requested tiles, most recent first, builds their mip pyramids and PUBLISHES them: an
-/// immutable snapshot of the loaded set is swapped in, so readers never lock and never see a
-/// half-built tile. Every publish increases version(); update() reports which tiles changed,
-/// and the renderer rebuilds the chunks over them.
+/// A fine sample inside an unloaded tile records a request (a relaxed atomic store) and returns
+/// no data. The loader thread loads the most recent request and publishes an immutable snapshot
+/// of the loaded set, bumping version(); readers never lock. update() reports what changed so
+/// the renderer can rebuild the chunks there. Data fades out towards unloaded neighbours, voids
+/// and coarse sample spacings.
 ///
-/// Blending: like the static mosaic, data fades into the base over kHighResolutionFeather - but
-/// towards every NEIGHBOUR square that is not loaded (or does not exist), towards voids, and
-/// with sample spacing (see TileStreamingSettings::fadeSpacing). Tiles may mix 3" and 1".
-///
-/// Thread safety: sample() and version() from any thread; update(), loadNow(), idle() and
-/// stats() from one controlling thread.
+/// sample() and version() may be called from any thread, the rest from one controlling thread.
 class HgtTileStreamer final : public HighResolutionTerrain {
 public:
     HgtTileStreamer(std::vector<HgtTileFile> files, const TileStreamingSettings& settings = {});
@@ -61,19 +51,18 @@ public:
     std::uint64_t version() const override { return version_.load(std::memory_order_acquire); }
 
     struct Change {
-        int lat = 0; ///< South-west corner of the tile, degrees.
+        int lat = 0; ///< South-west corner, degrees.
         int lon = 0;
-        bool loaded = false; ///< false = evicted
+        bool loaded = false; ///< or evicted
         std::uint64_t version = 0;
     };
-    /// Once per frame: advances the clock, evicts least recently used tiles above the budget and
-    /// returns the tiles loaded or evicted since the last call.
+    /// Once per frame: advances the clock, evicts LRU tiles as needed, returns what changed.
     std::vector<Change> update();
 
-    /// Loads a tile synchronously (tools, tests). False if there is no such tile on disk.
+    /// Synchronous load. False if the tile is not on disk.
     bool loadNow(int lat, int lon);
 
-    /// Nothing is waiting to be loaded (that fits the budget) and the loader is not busy.
+    /// Nothing loadable is pending and the loader is idle.
     bool idle() const;
 
     struct Stats {
@@ -100,18 +89,19 @@ private:
     };
     struct Entry {
         HgtTileFile file;
-        std::atomic<std::uint64_t> requested{0}; ///< Clock tick of the last request.
-        std::atomic<std::uint64_t> used{0};      ///< Clock tick of the last sample.
-        std::atomic<std::uint64_t> attempted{0}; ///< Clock tick of the last load attempt.
+        // Clock ticks.
+        std::atomic<std::uint64_t> requested{0};
+        std::atomic<std::uint64_t> used{0};
+        std::atomic<std::uint64_t> attempted{0};
         std::atomic<bool> failed{false};
-        std::atomic<bool> inFlight{false}; ///< Being loaded right now.
+        std::atomic<bool> inFlight{false};
     };
 
     static int key(int lat, int lon);
-    /// The current snapshot, cached per thread and refreshed only when version() changes - so
-    /// the hot path costs one atomic load, not a lock or a contended reference count.
+    /// Cached per thread and refreshed when version() changes: no lock or contended refcount on
+    /// the hot path.
     const Snapshot& currentSnapshot() const;
-    /// Requested recently, not attempted since, not being loaded, not loaded in `loaded`.
+    /// Requested recently, not attempted since, and neither loading nor loaded.
     bool isPending(const Entry& e, std::uint64_t now, const TileMap& loaded) const;
     std::size_t estimateBytes(const Entry& e) const;
     void publish(int k, std::shared_ptr<const Tile> tile, bool loaded, int lat, int lon);
@@ -123,12 +113,12 @@ private:
     std::unique_ptr<Entry[]> entries_;
     std::size_t entryCount_ = 0;
     std::unordered_map<int, std::size_t> index_; ///< Immutable after construction.
-    const std::uint64_t instance_;               ///< Unique id, for the per-thread snapshot cache.
+    const std::uint64_t instance_;               ///< Keys the per-thread snapshot cache.
 
     std::atomic<std::uint64_t> clock_{1};
     std::atomic<std::uint64_t> version_{0};
 
-    mutable std::mutex mutex_; ///< Guards snapshot_, changes_, bytes_, stats and busy_.
+    mutable std::mutex mutex_; ///< Guards everything below except the thread.
     std::condition_variable_any wake_;
     std::shared_ptr<const Snapshot> snapshot_;
     std::vector<Change> changes_;
@@ -137,7 +127,7 @@ private:
     std::uint64_t evictions_ = 0;
     bool busy_ = false;
 
-    std::jthread loader_; ///< Last: stops and joins before anything it uses is destroyed.
+    std::jthread loader_; ///< Last: joins before anything it uses is destroyed.
 };
 
 } // namespace orbis

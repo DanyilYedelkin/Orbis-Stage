@@ -42,7 +42,6 @@ TEST_CASE("zenith transmittance matches the analytic optical depth", "[atmospher
     CHECK_THAT(t.x, WithinRel(expected(kEarth.rayleighScattering.x, kEarth.ozoneAbsorption.x), 1e-4));
     CHECK_THAT(t.y, WithinRel(expected(kEarth.rayleighScattering.y, kEarth.ozoneAbsorption.y), 1e-4));
     CHECK_THAT(t.z, WithinRel(expected(kEarth.rayleighScattering.z, kEarth.ozoneAbsorption.z), 1e-4));
-    // Blue is scattered most: that is why the sky is blue and the noon sun barely yellow.
     CHECK(t.x > t.y);
     CHECK(t.y > t.z);
 }

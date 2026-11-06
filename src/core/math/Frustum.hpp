@@ -7,7 +7,7 @@
 
 namespace orbis {
 
-/// Plane  dot(normal, p) + distance = 0,  with the normal pointing INTO the frustum.
+/// Normal points inwards.
 struct Plane {
     Vec3d normal;
     double distance = 0.0;
@@ -15,12 +15,9 @@ struct Plane {
     double signedDistance(const Vec3d& p) const { return dot(normal, p) + distance; }
 };
 
-/// View frustum in CAMERA-RELATIVE space (camera at the origin), double precision.
-/// No far plane: the projection is infinite, and the horizon test culls the far side of the
-/// planet much better than a far plane could.
+/// Camera-relative. No far plane: horizon culling does that job.
 class Frustum {
 public:
-    /// `forward`, `right`, `up`: orthonormal camera basis. `verticalFov` in radians.
     static Frustum fromCamera(const Vec3d& forward, const Vec3d& right, const Vec3d& up,
                               double verticalFov, double aspect, double nearPlane);
 
@@ -45,9 +42,6 @@ inline Frustum Frustum::fromCamera(const Vec3d& forward, const Vec3d& right, con
     const double tanY = std::tan(verticalFov / 2.0);
     const double tanX = tanY * aspect;
 
-    // A side plane contains the camera and one frustum edge direction, e.g. the left edge
-    // (forward - right * tanX). Its inward normal (right + forward * tanX) is perpendicular to
-    // that edge and to `up`: check with dot products, every term cancels.
     Frustum f;
     f.planes_[0] = {normalize(right + forward * tanX), 0.0};  // left
     f.planes_[1] = {normalize(-right + forward * tanX), 0.0}; // right

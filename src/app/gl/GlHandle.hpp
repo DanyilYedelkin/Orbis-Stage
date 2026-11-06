@@ -6,10 +6,7 @@
 
 namespace orbis::gl {
 
-/// Move-only owner of an OpenGL object name (RAII).
-///
-/// GL objects are plain integers; forgetting glDelete* leaks GPU memory, and copying the integer
-/// leads to double deletes. Wrapping them like std::unique_ptr makes both bugs impossible.
+/// Move-only owner of a GL object name.
 template <typename Deleter>
 class GlHandle {
 public:
@@ -73,7 +70,6 @@ using Program = GlHandle<ProgramDeleter>;
 using Texture = GlHandle<TextureDeleter>;
 using Shader = GlHandle<ShaderDeleter>;
 
-/// glCreate* (DSA, GL 4.5) creates fully initialised objects without binding them.
 inline Buffer createBuffer() {
     GLuint id = 0;
     glCreateBuffers(1, &id);

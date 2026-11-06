@@ -1,12 +1,6 @@
-// Precomputes the sky irradiance table once at startup: for every (altitude, sun angle), the
-// light a HORIZONTAL surface receives from the whole sky (not from the sun disk), for a sun of
-// illuminance 1:  E = integral over the upper hemisphere of L(w) cos(theta) dw.
-//
-// Cosine-weighted stratified directions turn this into E = pi * mean(L). Each view ray is
-// integrated like the sky itself: single scattering with the real phase functions plus, when
-// uMultipleScattering is set, Hillaire's multiple-scattering term. With it unset the result is
-// pure single scattering - exactly what skyIrradianceSingleScattering() computes on the CPU, so
-// the startup check can compare the two.
+// Sky irradiance on a horizontal surface, sun illuminance 1. Cosine-weighted stratified
+// directions: E = pi * mean(L). Without uMultipleScattering it matches
+// skyIrradianceSingleScattering() on the CPU, which the startup check relies on.
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(rgba16f, binding = 0) uniform writeonly image2D uOutput;
 uniform int uMultipleScattering;
@@ -16,7 +10,7 @@ void main() {
     if (any(greaterThanEqual(texel, ivec2(kIrradianceSize)))) {
         return;
     }
-    // Same texel -> (r, muSun) mapping as irradianceTexelToRMu() in AtmosphereModel.cpp.
+    // Twin of irradianceTexelToRMu().
     float muSun = -1.0 + 2.0 * float(texel.x) / (kIrradianceSize.x - 1.0);
     float r = kBottomRadius + 0.001 +
               (kTopRadius - kBottomRadius - 0.002) * float(texel.y) / (kIrradianceSize.y - 1.0);

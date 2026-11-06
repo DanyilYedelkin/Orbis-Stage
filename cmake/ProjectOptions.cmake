@@ -1,5 +1,4 @@
-# Applies the project-wide warning / sanitizer policy to one of OUR targets.
-# Third-party targets are deliberately left alone: we cannot fix their warnings.
+# Warnings and sanitizers for first-party targets.
 function(orbis_configure_target target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /Zc:__cplusplus)
@@ -9,10 +8,10 @@ function(orbis_configure_target target)
     else()
         target_compile_options(${target} PRIVATE
             -Wall -Wextra -Wpedantic
-            -Wshadow                 # a local hides another variable
-            -Wconversion             # implicit narrowing, e.g. double -> float
-            -Wsign-conversion        # implicit signed <-> unsigned
-            -Wdouble-promotion       # accidental float -> double math
+            -Wshadow
+            -Wconversion
+            -Wsign-conversion
+            -Wdouble-promotion
             -Wold-style-cast
             -Wnon-virtual-dtor
             -Woverloaded-virtual)

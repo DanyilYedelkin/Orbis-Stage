@@ -3,15 +3,14 @@ in vec2 vNdc;
 uniform vec3 uForward;
 uniform vec3 uRight;
 uniform vec3 uUp;
-uniform vec2 uTanHalfFov;     // (tan(fovX / 2), tan(fovY / 2))
-uniform vec3 uCameraPlanet;   // camera position relative to the planet centre, metres
-uniform vec3 uSunDirection;   // unit, ECEF
+uniform vec2 uTanHalfFov;
+uniform vec3 uCameraPlanet;   // ECEF, metres
+uniform vec3 uSunDirection;
 uniform float uSunIlluminance;
 
 out vec4 fragColor;
 
 void main() {
-    // Reconstruct the view ray of this pixel from the camera basis.
     vec3 dirWorld = normalize(uForward + vNdc.x * uTanHalfFov.x * uRight + vNdc.y * uTanHalfFov.y * uUp);
 
     vec3 origin = toAtmosphere(uCameraPlanet);
@@ -21,8 +20,8 @@ void main() {
     vec3 color = vec3(0.0);
     vec3 viewTransmittance = vec3(1.0);
     vec2 top = raySphere(origin, dir, kTopRadius);
-    if (top.y > 0.0) { // the ray passes through the atmosphere
-        float t0 = max(top.x, 0.0); // from space: start where the ray enters
+    if (top.y > 0.0) {
+        float t0 = max(top.x, 0.0);
         float t1 = top.y;
         vec2 ground = raySphere(origin, dir, kBottomRadius);
         bool hitsGround = ground.x > 0.0;
@@ -36,11 +35,9 @@ void main() {
         viewTransmittance = hitsGround ? vec3(0.0) : transmittance;
     }
 
-    // Sun disk (~0.5 degrees), dimmed and reddened by the air in front of it. Kept far below
-    // its real brightness: otherwise all three channels saturate in the tone mapper and the
-    // sunset sun loses its colour (it would render white at any elevation).
+    // Far below the real brightness: saturating all channels would turn the sunset sun white.
     float disk = smoothstep(0.99996, 0.99999, dot(dirWorld, uSunDirection));
     color += viewTransmittance * disk * uSunIlluminance * 6.0;
 
-    fragColor = vec4(color, 1.0); // linear HDR: tone mapping happens in tonemap.frag
+    fragColor = vec4(color, 1.0);
 }

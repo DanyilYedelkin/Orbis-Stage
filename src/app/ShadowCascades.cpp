@@ -23,8 +23,7 @@ ShadowCascades::ShadowCascades()
     glTextureParameteri(id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTextureParameteri(id, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTextureParameteri(id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    // Hardware depth comparison: the texture returns "lit fraction" with bilinear filtering of
-    // the comparison results (free 2x2 PCF) instead of raw depth.
+    // Comparison mode with linear filtering: free 2x2 PCF.
     glTextureParameteri(id, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
     glTextureParameteri(id, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 
@@ -46,8 +45,7 @@ void ShadowCascades::render(const Camera& camera, float aspect, const Vec3d& sun
     const CameraBasis b = camera.basis();
     const Vec3d sun = normalize(sunDirection);
 
-    // Light basis, fixed in the world (it only depends on the sun), so it does not rotate with
-    // the camera - another source of shimmering avoided.
+    // World-fixed light basis: rotating it with the camera would shimmer.
     const Vec3d helper = std::abs(sun.z) < 0.9 ? Vec3d{0, 0, 1} : Vec3d{1, 0, 0};
     const Vec3d lightRight = normalize(cross(helper, sun));
     const Vec3d lightUp = cross(sun, lightRight);
@@ -65,7 +63,6 @@ void ShadowCascades::render(const Camera& camera, float aspect, const Vec3d& sun
 
     for (int c = 0; c < kCascades; ++c) {
         const auto ci = static_cast<std::size_t>(c);
-        // Bounding sphere of this slice of the view frustum (camera-relative).
         Vec3d center{};
         std::array<Vec3d, 8> corners;
         for (int k = 0; k < 8; ++k) {
@@ -82,9 +79,8 @@ void ShadowCascades::render(const Camera& camera, float aspect, const Vec3d& sun
         }
         radius = std::ceil(radius); // constant per cascade => constant texel size
 
-        // Snap the centre to whole texels IN WORLD SPACE (double precision, ECEF), then go
-        // back to camera-relative. Snapping camera-relative coordinates would not help: they
-        // change by fractional texels whenever the camera moves.
+        // Snap in ECEF: camera-relative coordinates shift by fractional texels as the camera
+        // moves.
         const double texel = 2.0 * radius / kResolution;
         const Vec3d worldCenter = camera.position() + center;
         const double cx = std::round(dot(worldCenter, lightRight) / texel) * texel;
@@ -109,9 +105,6 @@ void ShadowCascades::render(const Camera& camera, float aspect, const Vec3d& sun
         terrain.drawDepth(program_, camera, lightMatrices_[ci], geomorph);
     }
 }
-
-// (State restoration for the caller happens in Terrain::drawDepth and in the main pass, which
-// sets its own clear depth / depth function.)
 
 void ShadowCascades::bind() const { glBindTextureUnit(2, depth_.get()); }
 

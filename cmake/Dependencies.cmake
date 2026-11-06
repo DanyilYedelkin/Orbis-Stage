@@ -1,5 +1,4 @@
-# All third-party code is pinned to an exact release AND verified by SHA-256.
-# Builds are reproducible and a tampered archive fails the build instead of silently compiling.
+# Pinned releases, verified by SHA-256.
 include(FetchContent)
 
 if(ORBIS_BUILD_APP)
@@ -7,7 +6,7 @@ if(ORBIS_BUILD_APP)
     set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
-    # X11 is enough on Linux (Wayland desktops run it through XWayland) and needs fewer packages.
+    # XWayland covers Wayland desktops.
     set(GLFW_BUILD_WAYLAND  OFF CACHE BOOL "" FORCE)
 
     FetchContent_Declare(glfw
@@ -17,8 +16,7 @@ if(ORBIS_BUILD_APP)
         SYSTEM)
     FetchContent_MakeAvailable(glfw)
 
-    # Dear ImGui has no CMake build of its own: fetch the sources and compile the core plus the
-    # GLFW and OpenGL 3 backends into a static library.
+    # No CMake build upstream.
     FetchContent_Declare(imgui
         URL      https://github.com/ocornut/imgui/archive/refs/tags/v1.91.5.tar.gz
         URL_HASH SHA256=2aa2d169c569368439e5d5667e0796d09ca5cc6432965ce082e516937d7db254
@@ -34,7 +32,7 @@ if(ORBIS_BUILD_APP)
     target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
     target_compile_definitions(imgui
         PUBLIC  IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-        PRIVATE GLFW_INCLUDE_NONE) # the OpenGL backend brings its own tiny loader
+        PRIVATE GLFW_INCLUDE_NONE)
     target_link_libraries(imgui PUBLIC glfw)
 endif()
 

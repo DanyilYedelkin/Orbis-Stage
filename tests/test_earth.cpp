@@ -167,7 +167,7 @@ TEST_CASE("synthetic detail is subtle on lowlands and strong in mountains", "[ea
     };
     CHECK(deviation(52.2, 5.3) < 60.0);    // Netherlands: flat stays flat
     CHECK(deviation(46.0, 7.8) > 150.0);   // Alps: rugged
-    // A SMALL range must be detected too (a regression once smoothed the Tatras away).
+    // Narrow ranges like the Tatras must survive the relief smoothing.
     CHECK(deviation(49.0, 20.1) > 150.0);  // High Tatras
 }
 
@@ -244,7 +244,7 @@ TEST_CASE("synthetic mountain layers are normalised as declared", "[earth][noise
 
 TEST_CASE("Earth mountains are as steep as real ones, plains stay flat", "[earth]") {
     // Share of the area steeper than 30 degrees in a 20 km square, sampled every 30 m.
-    // Real high Alps: roughly a quarter. Before the measured redesign this was 0 %.
+    // Real high Alps: roughly a quarter.
     const auto steepShare = [](double lat0, double lon0) {
         const double mLat = 111320.0, mLon = 111320.0 * std::cos(lat0 * kDeg);
         const double step = 30.0;

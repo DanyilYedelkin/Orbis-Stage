@@ -5,9 +5,7 @@
 
 namespace orbis::gl {
 
-/// Assembles a fragment/vertex shader from shared GLSL + the shader's own code.
-/// `#line 1` after the shared part keeps the driver's error messages pointing at the right line
-/// of the shader file you are actually editing.
+/// Prelude, then `#line 1` so driver errors point into the shader's own file.
 inline std::string composeShader(std::string_view common, std::string_view body) {
     std::string source = "#version 450 core\n";
     source += common;

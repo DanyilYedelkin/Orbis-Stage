@@ -19,9 +19,8 @@ namespace {
 constexpr std::size_t kMaxResidentChunks = 3000;   // ~100 MB of vertex data at 32 quads/edge
 constexpr std::uint64_t kEvictAfterFrames = 600;   // ~10 s unused at 60 fps
 constexpr std::uint64_t kDetailSeed = 0x0DE7A11u;
-constexpr double kDetailPeriod = 256.0; // = kDetailPeriod in terrain.frag
+constexpr double kDetailPeriod = 256.0; // must match terrain.frag
 
-/// x mod period in [0, period), in double: the camera's position within the detail period.
 double positiveModulo(double x, double period) { return x - std::floor(x / period) * period; }
 } // namespace
 
@@ -34,12 +33,9 @@ Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
                                 shaders::terrain_frag),
               "terrain"),
       indexBuffer_(gl::createBuffer()),
-      // The lambda captures the ellipsoid by value and the elevation source by reference:
-      // sources are immutable after construction, so concurrent reads are safe.
       builder_(
           [ellipsoid, &elevation, n = settings.quadsPerEdge](const NodeKey& key) {
-              // The version BEFORE building: if data arrives mid-build, the mesh may or may not
-              // contain it, so it counts as the older version (and is rebuilt if needed).
+              // Read before building: data arriving mid-build makes the mesh count as older.
               const std::uint64_t version = elevation.version();
               ChunkMesh mesh = buildChunkMesh(key.region(), n, ellipsoid, elevation);
               mesh.dataVersion = version;
@@ -56,7 +52,6 @@ Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
     const std::vector<std::uint16_t> indices = buildChunkIndices(settings.quadsPerEdge);
     indexCount_ = static_cast<GLsizei>(indices.size());
     trianglesPerChunk_ = indices.size() / 3;
-    // Immutable storage (flags = 0): the data never changes, the driver can place it optimally.
     glNamedBufferStorage(indexBuffer_.get(),
                          static_cast<GLsizeiptr>(indices.size() * sizeof(std::uint16_t)),
                          indices.data(), 0);
@@ -67,13 +62,12 @@ void Terrain::upload(const NodeKey& key, const ChunkMesh& mesh) {
                    HeightRange{mesh.minHeight, mesh.maxHeight}, frame_, key.level,
                    mesh.boundingRadius, mesh.dataVersion, 0};
     if (const auto old = chunks_.find(key); old != chunks_.end()) {
-        chunk.requiredVersion = old->second.requiredVersion; // a rebuild may still be too old
+        chunk.requiredVersion = old->second.requiredVersion;
     }
     glNamedBufferStorage(chunk.vertices.get(),
                          static_cast<GLsizeiptr>(mesh.vertices.size() * sizeof(TerrainVertex)),
                          mesh.vertices.data(), 0);
 
-    // Vertex layout, described once per VAO with DSA (no glBind* juggling).
     const GLuint vao = chunk.vao.get();
     glVertexArrayVertexBuffer(vao, 0, chunk.vertices.get(), 0, sizeof(TerrainVertex));
     glVertexArrayElementBuffer(vao, indexBuffer_.get());
@@ -86,7 +80,6 @@ void Terrain::upload(const NodeKey& key, const ChunkMesh& mesh) {
     };
     attribute(0, 3, GL_FLOAT, GL_FALSE, offsetof(TerrainVertex, position));
     attribute(1, 3, GL_FLOAT, GL_FALSE, offsetof(TerrainVertex, morphDelta));
-    // Packed normals: the GPU unpacks 10:10:10:2 signed-normalised integers for free.
     attribute(2, 4, GL_INT_2_10_10_10_REV, GL_TRUE, offsetof(TerrainVertex, normal));
     attribute(3, 4, GL_INT_2_10_10_10_REV, GL_TRUE, offsetof(TerrainVertex, morphNormal));
     attribute(4, 2, GL_FLOAT, GL_FALSE, offsetof(TerrainVertex, elevation)); // + morphElevation
@@ -98,12 +91,10 @@ void Terrain::update(const Camera& lodCamera, int viewportWidth, int viewportHei
                      std::size_t maxUploads) {
     ++frame_;
 
-    // 1. Collect finished work.
     for (auto& [key, mesh] : builder_.takeCompleted(maxUploads)) {
         upload(key, mesh);
     }
 
-    // 2. Select.
     const CameraBasis b = lodCamera.basis();
     const double fov = lodCamera.verticalFov;
     const double aspect = static_cast<double>(viewportWidth) / std::max(viewportHeight, 1);
@@ -124,8 +115,7 @@ void Terrain::update(const Camera& lodCamera, int viewportWidth, int viewportHei
         chunks_.at(key).lastUsedFrame = frame_;
     }
 
-    // 3. Request what is missing - and rebuilds of drawn chunks whose data changed (streamed
-    //    tiles), behind anything missing: a hole-free image first, then the sharper data.
+    // Stale chunks (newer tile data) queue behind missing ones: no holes first, then sharpness.
     std::size_t stale = 0;
     for (const NodeKey& key : selection.draw) {
         if (chunks_.at(key).stale()) {
@@ -136,15 +126,13 @@ void Terrain::update(const Camera& lodCamera, int viewportWidth, int viewportHei
     lastSelectionComplete_ = selection.requests.empty();
     builder_.schedule(std::move(selection.requests));
 
-    // Front-to-back order: nearer chunks fill the depth buffer first, so the GPU can reject
-    // hidden fragments of farther chunks before shading them (early-Z).
+    // Front to back for early-Z.
     drawList_ = std::move(selection.draw);
     const Vec3d eye = lodCamera.position();
     std::sort(drawList_.begin(), drawList_.end(), [this, &eye](const NodeKey& a, const NodeKey& c) {
         return lengthSquared(chunks_.at(a).origin - eye) < lengthSquared(chunks_.at(c).origin - eye);
     });
 
-    // 4. Bound memory.
     evict();
 
     stats_ = {
@@ -162,9 +150,7 @@ void Terrain::update(const Camera& lodCamera, int viewportWidth, int viewportHei
 }
 
 void Terrain::evict() {
-    // Time-based: anything unused for a while goes, except the 6 roots (always needed as a
-    // fallback). Size-based: above the budget, evict least recently used first. Chunks used
-    // THIS frame are never evicted, so the current image cannot lose a chunk it draws.
+    // Roots stay as the fallback; chunks used this frame are never evicted.
     std::erase_if(chunks_, [this](const auto& entry) {
         const GpuChunk& c = entry.second;
         return c.level > 0 && frame_ - c.lastUsedFrame > kEvictAfterFrames;
@@ -194,9 +180,8 @@ void Terrain::invalidate(const Vec3d& centre, double angularRadius, std::uint64_
                          double coarsestAffected) {
     for (auto& [key, chunk] : chunks_) {
         if (lod_.vertexSpacing(key) > coarsestAffected) {
-            continue; // coarse levels do not use the data that changed
+            continue;
         }
-        // Two caps on the sphere overlap if their centres are closer than the sum of the radii.
         const double distance = length(chunk.origin);
         const double chunkRadius = std::asin(std::min(chunk.boundingRadius / distance, 1.0));
         const double between = std::acos(std::clamp(dot(chunk.origin / distance, centre), -1.0, 1.0));
@@ -214,23 +199,19 @@ void Terrain::drawChunks(const gl::ShaderProgram& program, const Vec3d& viewOrig
             continue;
         }
         const GpuChunk& chunk = it->second;
-        // THE key line of camera-relative rendering: the big numbers cancel out in double
-        // precision on the CPU, and the GPU only ever sees the small difference.
+        // Subtracted in double: the GPU only sees small camera-relative offsets.
         program.set("uChunkOffset", Vec3f(chunk.origin - viewOrigin));
         program.set("uLodOffset", Vec3f(chunk.origin - lodCameraPosition_));
         if (withDebugLevel) {
             program.set("uLodLevel", static_cast<int>(chunk.level));
         }
 
-        // Morph window. The PARENT was split when its vertex spacing projected to more than
-        // maxPixelError pixels, i.e. closer than D = parentSpacing * pixelsPerRadian / error.
-        // So this chunk only exists closer than ~D: at D it must look exactly like the parent
-        // (morph = 1), and by D/2 - where it splits into its own children - it must show its
-        // own surface (morph = 0), so its children can in turn start from it. A narrow window
-        // near D keeps most of the band at full detail (a wide one blurs the image by about
-        // half a level); ending below D keeps borders next to coarser neighbours crack-free.
+        // The parent splits at D = parentSpacing * pixelsPerRadian / error, so the chunk must
+        // match it at D and show its own surface well before D / 2, where it splits in turn.
+        // A narrow window just below D keeps most of the band at full detail and borders to
+        // coarser neighbours crack-free.
         if (chunk.level == 0) {
-            program.set("uMorphRange", 1e30f, 2e30f); // roots have no parent
+            program.set("uMorphRange", 1e30f, 2e30f);
         } else {
             const NodeKey probe{CubeFace::PosX, chunk.level, 0, 0};
             const double parentSpacing = 2.0 * lod_.vertexSpacing(probe);
@@ -252,7 +233,7 @@ void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings
     shader_.use();
     shader_.set("uViewProjection", viewProjection);
     shader_.set("uSunDirection", Vec3f(normalize(settings.sunDirection)));
-    shader_.set("uPlanetCenter", Vec3f(-cameraPos)); // only used as a direction, float is fine
+    shader_.set("uPlanetCenter", Vec3f(-cameraPos)); // float suffices: directions and km-scale air
     shader_.set("uWireframe", settings.wireframe ? 1 : 0);
     shader_.set("uShowLodLevels", settings.showLodLevels ? 1 : 0);
     shader_.set("uMorphEnabled", settings.geomorph ? 1 : 0);
@@ -295,10 +276,8 @@ void Terrain::drawDepth(const gl::ShaderProgram& program, const Camera& camera,
     program.set("uViewProjection", viewProjection);
     program.set("uMorphEnabled", geomorph ? 1 : 0);
 
-    // Standard depth for the shadow map (the main pass uses reversed-Z with GL_GREATER).
-    // No back-face culling: a heightfield seen from the sun has no "inside" to hide.
-    // Slope-scaled polygon offset pushes the stored depth slightly away from the sun, so
-    // surfaces do not shadow themselves ("shadow acne").
+    // Standard depth here (the main pass is reversed-Z). No culling: seen from the sun a
+    // heightfield has no inside.
     glDepthFunc(GL_LESS);
     glDisable(GL_CULL_FACE);
     glEnable(GL_POLYGON_OFFSET_FILL);

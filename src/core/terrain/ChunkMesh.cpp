@@ -35,10 +35,8 @@ struct SurfaceSample {
     double elevation; ///< Raw height-field value (may be negative).
 };
 
-/// Terrain point for a direction from the planet centre.
-///   1. hit the ellipsoid along the direction  -> sea-level point
-///   2. push it out along the ellipsoid normal  -> geodetic "up", same as a real altimeter
-/// Oceans are flat: geometry uses max(elevation, 0); the raw value is kept for colouring.
+/// Sea-level point along the direction, raised along the geodetic vertical. Oceans are flat
+/// (max(elevation, 0)); the raw elevation is kept for shading.
 SurfaceSample sampleSurface(const Vec3d& unitDir, double spacing, const Ellipsoid& ellipsoid,
                             const ElevationSource& terrain) {
     const double elevation = terrain.elevation(unitDir, spacing);
@@ -47,15 +45,10 @@ SurfaceSample sampleSurface(const Vec3d& unitDir, double spacing, const Ellipsoi
     return {seaLevel + up * std::max(elevation, 0.0), up, elevation};
 }
 
-/// Surface normal by central differences around `unitDir`, independent of cube faces.
-///
-/// Why not differences between neighbouring grid vertices? At a chunk or face border the
-/// neighbours belong to ANOTHER chunk, so each side would compute a different normal and the
-/// lighting would show a visible seam. Here the normal depends only on the direction itself, so
-/// two chunks sharing a border vertex compute bit-identical normals.
+/// Central differences around `unitDir` rather than between grid neighbours: the result depends
+/// only on the direction, so chunks sharing a border vertex get bit-identical normals.
 Vec3d surfaceNormalAt(const Vec3d& unitDir, double angularStep, double spacing,
                       const Ellipsoid& ellipsoid, const ElevationSource& terrain) {
-    // Any tangent basis works; it is derived from unitDir alone so it is deterministic.
     // cross(t1, t2) == unitDir, so the result points outwards.
     const Vec3d helper = std::abs(unitDir.z) < 0.9 ? Vec3d{0, 0, 1} : Vec3d{1, 0, 0};
     const Vec3d t1 = normalize(cross(helper, unitDir));
@@ -91,15 +84,13 @@ Vec3f unpackNormal(std::uint32_t packed) {
 }
 
 double chunkVertexSpacing(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid) {
-    // A face spans ~90 degrees (pi/2 rad) over 2 units of u, i.e. ~pi/4 rad per unit.
+    // ~pi/4 rad per unit of u.
     return region.size / quadsPerEdge * (std::numbers::pi / 4.0) * ellipsoid.semiMajorAxis();
 }
 
 double chunkSkirtDepth(const FaceRegion& region, int quadsPerEdge, const Ellipsoid& ellipsoid) {
-    // A crack is at most what the coarser neighbour misses between two of its vertices:
-    // terrain relief over one (coarse) cell plus the curvature sag of that cell. One cell size
-    // covers slopes up to 45 degrees at fine levels; at coarse levels the cell size is huge, so
-    // cap it at the maximum terrain height plus the sag of a root cell (~2 km).
+    // A crack is bounded by the relief and curvature sag over one coarse cell: one cell size
+    // covers 45 degree slopes, capped for the huge cells of coarse levels.
     const double spacing = chunkVertexSpacing(region, quadsPerEdge, ellipsoid);
     return std::min(spacing, kMaxTerrainElevation + 3000.0);
 }
@@ -127,25 +118,21 @@ ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellip
     const double step = region.size / n;
     const double spacing = chunkVertexSpacing(region, n, ellipsoid);
     const double angularStep = 0.5 * step * (std::numbers::pi / 4.0);
-    const bool hasParent = region.size < 2.0; // roots (a whole face) have nothing to morph to
+    const bool hasParent = region.size < 2.0;
 
     ChunkMesh mesh;
     mesh.region = region;
 
-    // Anchor at the sea-level point under the region centre. Any point near the chunk works;
-    // what matters is that every vertex is CLOSE to it.
     const double uCenter = region.uMin + region.size / 2.0;
     const double vCenter = region.vMin + region.size / 2.0;
     mesh.origin = ellipsoid.surfacePointAlong(faceToSphere(region.face, uCenter, vCenter));
 
-    // Exact endpoints on the borders (no accumulated rounding), so neighbouring chunks - and the
-    // parent - produce bit-identical u/v, and therefore identical samples, on shared points.
+    // Exact border coordinates: neighbours and the parent sample shared points bit-identically.
     const auto coordinate = [&](double min, int index, int count, double delta) {
         return index == count ? min + region.size : min + index * delta;
     };
 
-    // 1. The parent's surface: the parent samples every SECOND point of our grid, at twice our
-    //    spacing (coarser band limit). Computed exactly as the parent's own mesh does it.
+    // The parent's surface, sampled exactly as the parent's own mesh does.
     std::vector<PointState> parent;
     if (hasParent) {
         parent.reserve(static_cast<std::size_t>((half + 1) * (half + 1)));
@@ -189,11 +176,9 @@ ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellip
                                  surfaceNormalAt(dir, angularStep, spacing, ellipsoid, terrain),
                                  s.elevation};
 
-            // 2. Where this vertex lies on the parent's surface. Even/even vertices ARE parent
-            //    vertices; the others lie on a parent edge or on the diagonal of a parent quad,
-            //    where the parent's triangles interpolate linearly between two vertices. The
-            //    diagonal is (i, j) -> (i+1, j+1), matching the triangulation in
-            //    buildChunkIndices(), so the morph target really is ON the parent's triangles.
+            // Morph target on the parent's triangles: even/even vertices are parent vertices,
+            // the others interpolate along a parent edge or the (i, j) -> (i+1, j+1) diagonal
+            // used by buildChunkIndices().
             PointState target = own;
             if (hasParent) {
                 const int pi = i / 2;
@@ -228,8 +213,7 @@ ChunkMesh buildChunkMesh(const FaceRegion& region, int quadsPerEdge, const Ellip
         }
     }
 
-    // Skirt: a copy of every border vertex, pushed straight down. Same normal, elevation and
-    // morph delta as the border vertex, so it moves with it and is shaded like the terrain.
+    // Border vertices pushed down; same normal and morph so they move and shade with the edge.
     const double depth = chunkSkirtDepth(region, n, ellipsoid);
     for (int k = 0; k < chunkSkirtVertexCount(n); ++k) {
         const auto g = static_cast<std::size_t>(boundaryGridIndex(k, n));
@@ -271,9 +255,7 @@ std::vector<std::uint16_t> buildChunkIndices(int quadsPerEdge) {
         }
     }
 
-    // Skirt quads between border vertex e_k and the skirt vertex s_k below it. The border is
-    // walked counter-clockwise, so "outside the chunk" is on the right of the walking direction;
-    // this winding makes the skirt face outwards - towards the neighbour whose crack it hides.
+    // The border runs counter-clockwise, so this winding faces the skirt outwards.
     const int skirtBase = chunkGridVertexCount(n);
     const int ring = chunkSkirtVertexCount(n);
     for (int k = 0; k < ring; ++k) {

@@ -128,8 +128,7 @@ DetailNoise makeDetailNoise(int size, std::uint64_t seed) {
         }
     }
 
-    // Normalise height (and, with the same factor, its derivatives) and variation to mean 0 /
-    // std 1 by MEASURING them: then the shader's amplitudes are literally standard deviations.
+    // Measured, so the shader's amplitudes are standard deviations.
     for (int channel : {0, 3}) {
         double sum = 0.0;
         double sumSq = 0.0;

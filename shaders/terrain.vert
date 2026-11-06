@@ -1,19 +1,17 @@
 #version 450 core
 
-// Camera-relative rendering: the camera sits at the origin of the coordinate system the GPU sees.
-// No vertex ever carries an absolute planetary coordinate (~6.4e6 m), so float precision is
-// spent where the viewer is looking instead of on the distance to the Earth's centre.
+// Camera-relative: no absolute ECEF coordinate reaches the GPU.
 
-layout(location = 0) in vec3 aPosition;    // metres, relative to the chunk origin
-layout(location = 1) in vec3 aMorphDelta;  // parent-surface position - aPosition
-layout(location = 2) in vec4 aNormal;      // unit, ECEF-aligned (unpacked from 10:10:10:2)
-layout(location = 3) in vec4 aMorphNormal; // the parent's normal here
-layout(location = 4) in vec2 aElevation;   // (own, parent) elevation in metres
+layout(location = 0) in vec3 aPosition;    // relative to the chunk origin
+layout(location = 1) in vec3 aMorphDelta;
+layout(location = 2) in vec4 aNormal;
+layout(location = 3) in vec4 aMorphNormal;
+layout(location = 4) in vec2 aElevation;   // own, parent
 
-uniform mat4 uViewProjection; // projection * rotation-only view
-uniform vec3 uChunkOffset;    // chunk origin - camera position (subtracted in double on the CPU)
-uniform vec3 uLodOffset;      // chunk origin - LOD camera (= camera unless the LOD is frozen)
-uniform vec2 uMorphRange;     // distances where morphing starts / is complete
+uniform mat4 uViewProjection; // rotation-only view
+uniform vec3 uChunkOffset;    // chunk origin - camera, subtracted in double
+uniform vec3 uLodOffset;      // chunk origin - LOD camera (differs when frozen)
+uniform vec2 uMorphRange;
 uniform int uMorphEnabled;
 
 out VsOut {
@@ -23,9 +21,7 @@ out VsOut {
 } vsOut;
 
 void main() {
-    // Geomorphing. The blend factor depends only on the vertex POSITION (its distance to the LOD
-    // camera), never on which chunk it belongs to - so two chunks sharing a border vertex morph
-    // it identically and no crack opens between them.
+    // Depends only on the vertex position, so chunks sharing a border vertex morph it alike.
     float distanceToLodCamera = length(aPosition + uLodOffset);
     float morph = uMorphEnabled != 0
                       ? smoothstep(uMorphRange.x, uMorphRange.y, distanceToLodCamera)

@@ -160,9 +160,7 @@ TEST_CASE("height field never exceeds its declared maximum", "[lod][bounds]") {
 }
 
 TEST_CASE("from deep space only the roots are drawn", "[lod][select]") {
-    // Note: a bounding sphere around a whole cube face (90 degrees of planet) is too large to
-    // ever fall completely behind the horizon, so even the far-side root is kept. That is fine:
-    // roots are cheap, and the horizon test does its real work on smaller nodes (next test).
+    // A whole face is too large to fall behind the horizon; the far-side root is kept.
     const TerrainLod lod(kWgs84, {});
     const LodSelection s = lod.select(makeView({0.0, 0.0, 1.0e8}, 0.0, -89.0), kEverythingResident);
     CHECK(s.deepestLevel == 0);
@@ -178,8 +176,7 @@ TEST_CASE("near the ground the selection refines to the deepest level", "[lod][s
     CHECK_FALSE(hasOverlap(s.draw));
     CHECK(s.frustumCulled > 0);
     CHECK(s.horizonCulled > 0);
-    // Without culling and with loose bounds this was ~24 000 chunks (a regression this test
-    // now guards against); with tight height ranges and the exact horizon: about a thousand.
+    // Loose bounds without horizon culling gave ~24 000.
     CHECK(s.draw.size() < 2500);
 }
 

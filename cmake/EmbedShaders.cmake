@@ -1,8 +1,4 @@
-# Turns GLSL files into a generated C++ header with `inline constexpr std::string_view` constants.
-# Why: the executable has no runtime file dependencies, so it works no matter what the working
-# directory is (Visual Studio, CLion, double-click, CI). The header is regenerated at BUILD time
-# whenever a shader changes, so no CMake re-configure is needed.
-#
+# Shaders as string_view constants, regenerated at build time when a shader changes.
 #   orbis_embed_shaders(<target> <shader files...>)
 #   -> #include "EmbeddedShaders.hpp"   e.g. orbis::shaders::terrain_vert
 function(orbis_embed_shaders target)

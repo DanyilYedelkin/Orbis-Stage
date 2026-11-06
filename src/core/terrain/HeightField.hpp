@@ -8,15 +8,8 @@
 
 namespace orbis {
 
-/// Procedural elevation model of a fictional planet.
-///
-/// Sampled by DIRECTION from the planet centre (a unit vector), never by (lat, lon):
-/// 2D noise on lat/lon would be stretched near the poles and have a seam at 180 degrees;
-/// 3D noise evaluated on the sphere has neither.
-///
-/// Layers: continents (thousands of km), where mountain ranges run (hundreds of km), alpine
-/// ridged relief inside them (kilometres) and fractal detail down to ~1 m - which is what the LOD
-/// quadtree reveals as the camera descends.
+/// Procedural planet: 3D noise on the sphere (no pole stretching or seam), continents, mountain
+/// ranges, ridged relief and detail down to about a metre.
 class HeightField final : public ElevationSource {
 public:
     explicit HeightField(std::uint64_t seed);

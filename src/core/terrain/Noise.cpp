@@ -17,8 +17,7 @@ std::uint64_t splitMix64(std::uint64_t& state) {
     return z ^ (z >> 31);
 }
 
-/// Quintic fade 6t^5 - 15t^4 + 10t^3: zero 1st and 2nd derivatives at 0 and 1, which removes
-/// the visible grid artefacts of the original (cubic) Perlin noise.
+/// Quintic: C2, no grid artefacts of the cubic fade.
 double fade(double t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
 
 double lerp(double t, double a, double b) { return a + t * (b - a); }
@@ -58,7 +57,6 @@ double PerlinNoise::sample(const Vec3d& pt) const {
     const int yi = static_cast<int>(fy) & 255;
     const int zi = static_cast<int>(fz) & 255;
 
-    // Position inside the cell, [0, 1).
     const double x = pt.x - fx;
     const double y = pt.y - fy;
     const double z = pt.z - fz;
@@ -75,7 +73,6 @@ double PerlinNoise::sample(const Vec3d& pt) const {
     const int ba = P(b) + zi;
     const int bb = P(b + 1) + zi;
 
-    // Trilinear blend of the 8 corner contributions.
     return lerp(w,
                 lerp(v, lerp(u, grad(P(aa), x, y, z), grad(P(ba), x - 1, y, z)),
                      lerp(u, grad(P(ab), x, y - 1, z), grad(P(bb), x - 1, y - 1, z))),
@@ -164,8 +161,7 @@ double fbm(const PerlinNoise& noise, const Vec3d& p, const FbmParams& params,
     double frequency = 1.0;
     double totalAmplitude = 0.0;
     for (int i = 0; i < params.octaves; ++i) {
-        // Full weight up to half the limit, linear fade to zero at the limit. A smooth fade
-        // (instead of a hard cut) means an octave appears gradually as you zoom in.
+        // Fade, not cut: octaves appear gradually while zooming in.
         const double weight = std::clamp(2.0 - 2.0 * frequency / maxFrequency, 0.0, 1.0);
         if (weight > 0.0) {
             sum += weight * amplitude * noise.sample(p * frequency);

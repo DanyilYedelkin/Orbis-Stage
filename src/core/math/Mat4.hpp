@@ -16,8 +16,7 @@ struct Vec4 {
     T w{};
 };
 
-/// 4x4 matrix stored column-major - the same memory layout as GLSL `mat4` - so data() can be
-/// uploaded with glUniformMatrix4fv(..., transpose = GL_FALSE). Element access is (column, row).
+/// Column-major like GLSL; m(column, row).
 template <typename T>
 class Mat4 {
 public:
@@ -67,12 +66,8 @@ constexpr Vec4<T> operator*(const Mat4<T>& m, const Vec4<T>& v) {
             m(0, 3) * v.x + m(1, 3) * v.y + m(2, 3) * v.z + m(3, 3) * v.w};
 }
 
-/// Perspective projection with REVERSED Z and an INFINITE far plane, for a [0, 1] clip-space
-/// depth range (glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE), glDepthFunc(GL_GREATER)).
-///
-/// Resulting depth is  zNear / -z_view:  1 at the near plane, -> 0 towards infinity.
-/// Float numbers are densest near 0, and 1/z is densest near the camera; reversing Z makes the
-/// two distributions cancel out, giving near-uniform precision from 0.5 m to the Moon.
+/// Depth = zNear / -z_view for GL_ZERO_TO_ONE clip control and GL_GREATER. With a float depth
+/// buffer the float and 1/z distributions cancel, so precision is near uniform with distance.
 template <typename T>
 Mat4<T> perspectiveReversedZInfinite(T verticalFov, T aspect, T zNear) {
     const T f = T(1) / std::tan(verticalFov / T(2));
@@ -84,9 +79,7 @@ Mat4<T> perspectiveReversedZInfinite(T verticalFov, T aspect, T zNear) {
     return m;
 }
 
-/// Rotation-only view matrix from an orthonormal camera basis (camera looks down -Z, OpenGL
-/// convention). There is deliberately no translation: the renderer works in camera-relative
-/// coordinates, so the camera is always at the origin.
+/// No translation: rendering is camera-relative.
 template <typename T>
 Mat4<T> viewRotation(const Vec3<T>& right, const Vec3<T>& up, const Vec3<T>& forward) {
     Mat4<T> m = Mat4<T>::identity();
@@ -96,9 +89,7 @@ Mat4<T> viewRotation(const Vec3<T>& right, const Vec3<T>& up, const Vec3<T>& for
     return m;
 }
 
-/// Orthographic projection for a view looking down -Z, depth mapped to [0, 1] (the clip control
-/// used everywhere in the renderer). Standard depth here (near -> 0): shadow maps need no
-/// reversed-Z, their range is short and linear.
+/// Depth in [0, 1], near -> 0. Shadow maps do not need reversed Z.
 template <typename T>
 Mat4<T> orthographicZeroToOne(T halfWidth, T halfHeight, T zNear, T zFar) {
     Mat4<T> m = Mat4<T>::identity();
@@ -109,7 +100,6 @@ Mat4<T> orthographicZeroToOne(T halfWidth, T halfHeight, T zNear, T zFar) {
     return m;
 }
 
-/// View matrix of a camera at `eye` with an orthonormal basis: rotation, then translation.
 template <typename T>
 Mat4<T> viewMatrix(const Vec3<T>& eye, const Vec3<T>& right, const Vec3<T>& up,
                    const Vec3<T>& forward) {

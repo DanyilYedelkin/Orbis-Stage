@@ -133,8 +133,7 @@ std::vector<float> makeCloudWeather(int faceSize, std::uint64_t seed) {
     const PerlinNoise warp(seed ^ 0x9E3779B97F4A7C15ull);
     const auto faceTexels = static_cast<std::size_t>(faceSize) * static_cast<std::size_t>(faceSize);
     std::vector<float> out(faceTexels * 6);
-    // One thread per cube face: each writes only its own part of `out`, and the noise objects
-    // are read-only, so no synchronisation is needed (and the result does not depend on it).
+    // One thread per face; each writes only its own slice.
     const auto fillFace = [&](int face) {
         std::size_t i = static_cast<std::size_t>(face) * faceTexels;
         for (int y = 0; y < faceSize; ++y) {
@@ -156,7 +155,7 @@ std::vector<float> makeCloudWeather(int faceSize, std::uint64_t seed) {
         for (int face = 0; face < 6; ++face) {
             threads.emplace_back(fillFace, face);
         }
-    } // joined here
+    }
     return out;
 }
 

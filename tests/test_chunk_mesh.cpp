@@ -113,9 +113,7 @@ TEST_CASE("adjacent chunks share identical border vertices and normals", "[chunk
     const ChunkMesh a = buildChunkMesh({CubeFace::PosX, 0.0, 0.0, size}, n, kWgs84, kField);
     const ChunkMesh b = buildChunkMesh({CubeFace::PosX, size, 0.0, size}, n, kWgs84, kField);
 
-    // Positions are stored as float relative to each chunk's origin, so each side rounds with
-    // a step of ~radius * FLT_EPSILON. That bounds the mismatch; it shrinks with the chunk size,
-    // which is exactly why LOD + camera-relative rendering gives sub-mm precision up close.
+    // Each side rounds to float relative to its own origin: ~radius * FLT_EPSILON.
     const double tolerance = 2.0 * std::max(a.boundingRadius, b.boundingRadius) *
                              static_cast<double>(std::numeric_limits<float>::epsilon());
 

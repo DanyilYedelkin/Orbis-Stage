@@ -8,37 +8,25 @@
 
 namespace orbis {
 
-/// GPU side of the physically based atmosphere: owns the precomputed lookup tables.
-///
-/// Both tables depend only on the atmosphere itself (not on the camera or the sun), so they are
-/// computed ONCE at startup by compute shaders and then only sampled - the per-frame cost is
-/// the raymarch for the sky and the aerial perspective.
+/// Atmosphere LUTs, computed once at startup by compute shaders.
 class Atmosphere {
 public:
     Atmosphere(const AtmosphereParameters& parameters, const Ellipsoid& ellipsoid);
 
-    /// GLSL prelude for every shader that uses the atmosphere: generated constants + functions.
     const std::string& shaderPrelude() const { return prelude_; }
     const AtmosphereParameters& parameters() const { return parameters_; }
 
-    /// Texture unit of the sky irradiance table (0 and 1 are transmittance / multiple
-    /// scattering; units in between belong to the passes).
+    /// Transmittance and multiple scattering are bound to units 0 and 1.
     static constexpr unsigned kIrradianceUnit = 5;
 
-    /// Binds the tables to texture units 0 (transmittance), 1 (multiple scattering) and
-    /// kIrradianceUnit (sky irradiance).
     void bind() const;
 
-    /// Reads the transmittance table back from the GPU and compares it with the CPU reference
-    /// implementation. Returns the largest absolute difference. Catches shader bugs that would
-    /// otherwise only show up as "the sunset looks a bit off".
+    /// Max absolute difference of the transmittance LUT from the CPU reference.
     double validateAgainstCpu() const;
 
-    /// The irradiance table is validated while it is built: the GPU computes it once with
-    /// single scattering only and compares with skyIrradianceSingleScattering() on the CPU.
-    /// Largest difference relative to the table's maximum.
+    /// Single-scattering pass against skyIrradianceSingleScattering(), relative to the maximum.
     double irradianceValidationError() const { return irradianceError_; }
-    /// How much multiple scattering adds to the sky irradiance at noon on the ground (ratio).
+    /// Ground irradiance at noon, multiple over single scattering.
     double multipleScatteringGain() const { return multipleScatteringGain_; }
 
 private:

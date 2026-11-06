@@ -14,16 +14,14 @@
 
 namespace orbis {
 
-/// Address of a quadtree node: cube face, depth, and integer cell coordinates at that depth
-/// (x, y in [0, 2^level)). Integer keys instead of pointers: trivially hashable, copyable to
-/// worker threads, and the face region follows exactly from them.
+/// x, y in [0, 2^level).
 struct NodeKey {
     CubeFace face = CubeFace::PosX;
     std::uint8_t level = 0;
     std::uint32_t x = 0;
     std::uint32_t y = 0;
 
-    static constexpr int kMaxLevel = 27; ///< Limited by the 28-bit x/y fields in packed().
+    static constexpr int kMaxLevel = 27;
 
     /// 3 bits face | 5 bits level | 28 bits x | 28 bits y.
     std::uint64_t packed() const {
@@ -37,8 +35,7 @@ struct NodeKey {
         return {face, static_cast<std::uint8_t>(level + 1), x * 2 + dx, y * 2 + dy};
     }
 
-    /// Region on the face. Sizes are powers of two, so every value is exact in double and
-    /// neighbours agree bit-for-bit on their shared borders.
+    /// Powers of two: exact in double, so neighbours share borders bit for bit.
     FaceRegion region() const {
         const double size = 2.0 / static_cast<double>(std::uint64_t{1} << level);
         return {face, -1.0 + x * size, -1.0 + y * size, size};
@@ -49,7 +46,7 @@ struct NodeKey {
 
 struct NodeKeyHash {
     std::size_t operator()(const NodeKey& k) const noexcept {
-        // SplitMix64 finaliser: packed keys of neighbours differ in few bits; mix them well.
+        // SplitMix64 finaliser: neighbouring keys differ in few bits.
         std::uint64_t z = k.packed() + 0x9E3779B97F4A7C15ull;
         z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
         z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
@@ -100,31 +97,22 @@ struct LodSelection {
     int deepestLevel = 0;
 };
 
-/// Chunked LOD over the 6 cube faces.
-///
-/// select() is a PURE function of (view, which nodes are resident): no hidden state, so it is
-/// trivially testable and could run on another thread. Rules per node:
-///   1. culled by frustum or horizon            -> skip the whole subtree
-///   2. projected error small enough            -> draw it
-///   3. otherwise refine: if every VISIBLE child is resident, recurse into them; if not, draw
-///      this node for now and request the missing children. The image never has holes, it just
-///      gets sharper as data arrives.
+/// Chunked LOD over the cube faces. select() depends only on the view and the residency
+/// callback. A node that needs refining is drawn itself until all its visible children are
+/// resident, so there are never holes while meshes are being built.
 class TerrainLod {
 public:
     TerrainLod(const Ellipsoid& ellipsoid, const LodSettings& settings);
 
-    /// Returns the height range of the node's mesh if it is resident, nullopt otherwise.
+    /// Height range of the node's mesh, or nullopt if not resident.
     using Residency = std::function<std::optional<HeightRange>(const NodeKey&)>;
     LodSelection select(const LodView& view, const Residency& isResident) const;
 
-    /// Conservative sphere containing the node's surface for any elevation within `heights`.
-    /// The default (0 .. max terrain height) is valid before ANY data exists.
+    /// Conservative for any elevation within `heights`.
     BoundingSphere bounds(const NodeKey& key, const HeightRange& heights = {}) const;
 
-    /// Height range guaranteed to contain the node AND all of its descendants, given the range
-    /// of the node's own mesh. Descendants add finer detail and resolve peaks that fell between
-    /// this node's vertices; both are bounded by a margin proportional to the vertex spacing
-    /// (verified against real meshes in the tests).
+    /// Bounds the node's descendants too: finer levels resolve peaks between this node's
+    /// vertices, by at most a margin proportional to the vertex spacing.
     HeightRange subtreeRange(const NodeKey& key, const HeightRange& meshRange) const;
     double vertexSpacing(const NodeKey& key) const;
 

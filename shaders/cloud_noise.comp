@@ -1,8 +1,5 @@
-// Generates the tiling 3D cloud noise once at startup.
-//   R    Perlin-Worley: smooth Perlin fBm "inflated" by Worley cells - billowy cumulus shapes
-//   GBA  Worley fBm at 4, 8 and 16 cells per tile - for sharpening the shapes and for erosion
-// Everything is periodic over the texture (feature points and gradients are hashed from WRAPPED
-// cell coordinates), so the clouds can be anchored to the world with small coordinates.
+// R: Perlin-Worley. GBA: Worley fBm at 4, 8 and 16 cells per tile, for erosion.
+// Hashes use wrapped cell coordinates, so the texture tiles.
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 layout(rgba8, binding = 0) uniform writeonly image3D uOutput;
 uniform int uSize;
@@ -23,7 +20,6 @@ vec3 hash33(ivec3 cell, int period, uint seed) {
     return vec3(pcg3d(c + uvec3(seed, seed * 7u, seed * 13u)) & 0xFFFFFFu) / float(0xFFFFFF);
 }
 
-// 1 - distance to the nearest feature point (in cells), periodic with `cells` per tile.
 float worley(vec3 p, int cells, uint seed) {
     vec3 x = p * float(cells);
     ivec3 base = ivec3(floor(x));

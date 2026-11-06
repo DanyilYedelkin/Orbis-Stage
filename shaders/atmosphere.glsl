@@ -1,6 +1,4 @@
-// Physically based atmosphere (S. Hillaire, EGSR 2020), shared by the LUT compute shaders, the
-// sky and the terrain. Constants (kBottomRadius, kRayleighScattering, ...) are generated from the
-// C++ AtmosphereParameters and prepended. Units: km, 1/km.
+// Hillaire 2020. Constants are generated from AtmosphereParameters. Units: km, 1/km.
 
 uniform sampler2D uTransmittanceLut;
 uniform sampler2D uMultiScatteringLut;
@@ -25,7 +23,7 @@ Medium mediumAt(float altitude) {
     return m;
 }
 
-// Texel centres sit exactly on x = 0 and x = 1, so the horizon and the zenith are stored exactly.
+// Texel centres on x = 0 and 1: horizon and zenith are stored exactly.
 float unitToTexCoord(float x, float size) { return 0.5 / size + x * (1.0 - 1.0 / size); }
 
 float distanceToTop(float r, float mu) {
@@ -33,7 +31,7 @@ float distanceToTop(float r, float mu) {
     return max(0.0, -r * mu + sqrt(max(discriminant, 0.0)));
 }
 
-// Same formulas as transmittanceUnitToRMu / transmittanceRMuToUnit in AtmosphereModel.cpp.
+// Twin of transmittanceUnitToRMu / transmittanceRMuToUnit.
 void transmittanceUnitToRMu(vec2 unit, out float r, out float mu) {
     float h = sqrt(kTopRadius * kTopRadius - kBottomRadius * kBottomRadius);
     float rho = h * unit.y;
@@ -53,8 +51,7 @@ vec2 transmittanceRMuToUv(float r, float mu) {
     return vec2(unitToTexCoord(xMu, kTransmittanceSize.x), unitToTexCoord(rho / h, kTransmittanceSize.y));
 }
 
-// Light from the sun reaching radius r, sun at cosine-of-zenith muSun. The planet's shadow is
-// softened over ~0.5 degrees (the sun is a disk, not a point) instead of a hard cut.
+// The planet's shadow is softened over the sun's disk.
 vec3 sunTransmittance(float r, float muSun) {
     float sinHorizon = kBottomRadius / r;
     float cosHorizon = -sqrt(max(1.0 - sinHorizon * sinHorizon, 0.0));
@@ -69,8 +66,7 @@ vec3 multipleScattering(float r, float muSun) {
     return texture(uMultiScatteringLut, uv).rgb;
 }
 
-// Sky irradiance on a HORIZONTAL surface at radius r, for a sun of illuminance 1 (no direct
-// sunlight in it). See irradiance.comp.
+// On a horizontal surface, sun illuminance 1, no direct light.
 vec3 skyIrradiance(float r, float muSun) {
     vec2 uv = vec2(unitToTexCoord(muSun * 0.5 + 0.5, kIrradianceSize.x),
                    unitToTexCoord(clamp((r - kBottomRadius - 0.001) / (kTopRadius - kBottomRadius - 0.002),
@@ -80,14 +76,14 @@ vec3 skyIrradiance(float r, float muSun) {
 
 float rayleighPhase(float c) { return 3.0 / (16.0 * kPi) * (1.0 + c * c); }
 
-float miePhase(float c) { // Cornette-Shanks: Henyey-Greenstein with a better backward lobe
+float miePhase(float c) { // Cornette-Shanks
     float g = kMieAnisotropy;
     float g2 = g * g;
     float k = 3.0 / (8.0 * kPi) * (1.0 - g2) / (2.0 + g2);
     return k * (1.0 + c * c) / pow(1.0 + g2 - 2.0 * g * c, 1.5);
 }
 
-// Ray-sphere (centre at origin): (near, far) distances, both negative on a miss.
+// (near, far), both negative on a miss.
 vec2 raySphere(vec3 origin, vec3 dir, float radius) {
     float b = dot(origin, dir);
     float c = dot(origin, origin) - radius * radius;
@@ -99,10 +95,8 @@ vec2 raySphere(vec3 origin, vec3 dir, float radius) {
     return vec2(-b - s, -b + s);
 }
 
-// In-scattered light and transmittance along origin + t * dir, t in [t0, t1], for a sun of
-// illuminance 1. Single scattering with the real phase functions plus Hillaire's multiple
-// scattering term. Steps are denser near t0 (the eye), where detail matters most; each step is
-// integrated analytically (energy-conserving even with few steps).
+// Sun illuminance 1. Steps are denser near t0; each is integrated analytically, which conserves
+// energy even with few steps.
 void integrateScattering(vec3 origin, vec3 dir, float t0, float t1, vec3 sunDir, int steps,
                          out vec3 luminance, out vec3 transmittance) {
     luminance = vec3(0.0);
@@ -130,9 +124,8 @@ void integrateScattering(vec3 origin, vec3 dir, float t0, float t1, vec3 sunDir,
     }
 }
 
-// Planet-centred metres (on the WGS84 ellipsoid) -> km in the spherical atmosphere model.
-// Scaling z by a/b turns the ellipsoid into a sphere (the same trick as the horizon culling):
-// altitudes above the ellipsoid become altitudes above the sphere, to within 0.3%.
+// ECEF metres -> km in the spherical model. Scaling z by a/b maps the ellipsoid to the sphere,
+// heights to within 0.3%.
 vec3 toAtmosphere(vec3 planetMeters) {
     return vec3(planetMeters.xy, planetMeters.z * kEllipsoidAOverB) * kMetersToAtmosphereKm;
 }
