@@ -12,6 +12,7 @@ add_library(orbis_core STATIC
     terrain/HgtTiles.cpp
     terrain/HighResolutionTerrain.cpp
     terrain/HgtTileStreamer.cpp
+    terrain/Climate.cpp
     terrain/LandCover.cpp
     terrain/DetailNoise.cpp
     terrain/ChunkMesh.cpp

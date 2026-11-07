@@ -28,11 +28,8 @@ HgtMosaicTerrain::sample(double latitude, double longitude, double sampleSpacing
     if (std::isnan(real)) {
         return std::nullopt;
     }
-    // Blend into the base layer near ANY boundary of the data - the outer edge of the tiles, a
-    // tile that was not downloaded, a void - so there is never a cliff. The coverage mask read
-    // at its coarsest level is a blurred 0..1 "is there data around".
-    const double coverage =
-        coverage_.sample(latitude, longitude, static_cast<double>(coverage_.levelCount() - 1));
+    // Blend out at the edge of the tiles, at missing tiles and at voids, so there is no cliff.
+    const double coverage = coverage_.sample(latitude, longitude, kCoverageLevel);
     const double edge = grid_.angularDistanceToEdge(latitude, longitude) * kMeanRadius;
     const double weight =
         smoothstep(0.55, 0.95, coverage) * smoothstep(0.0, kHighResolutionFeather, edge);

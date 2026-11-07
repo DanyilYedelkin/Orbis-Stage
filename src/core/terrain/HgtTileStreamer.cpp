@@ -108,9 +108,8 @@ HgtTileStreamer::sample(double latitude, double longitude, double sampleSpacing)
     }
     double weight = spacingWeight;
     if (tile.coverage) {
-        weight *= smoothstep(0.55, 0.95,
-                             tile.coverage->sample(latitude, longitude,
-                                                   static_cast<double>(tile.coverage->levelCount() - 1)));
+        weight *=
+            smoothstep(0.55, 0.95, tile.coverage->sample(latitude, longitude, kCoverageLevel));
     }
     // Fade towards every neighbouring square without loaded data.
     double nearestMissing = 1e9;

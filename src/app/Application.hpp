@@ -13,6 +13,7 @@
 #include "app/gl/RenderTarget.hpp"
 #include "core/geo/Ellipsoid.hpp"
 #include "core/scene/Camera.hpp"
+#include "core/terrain/Climate.hpp"
 #include "core/terrain/ElevationSource.hpp"
 #include "core/terrain/HgtTileStreamer.hpp"
 
@@ -44,6 +45,7 @@ struct AppOptions {
     bool surfaceDetail = true;
     bool clouds = true;
     double cloudCoverage = 0.35; ///< 0 clear .. 1 overcast.
+    int dayOfYear = 196;         ///< 0 = 1 January; drives vegetation, snow and sea ice.
     double fovDegrees = 45.0; ///< Vertical.
     bool viewAboveGround = false; ///< --view altitude above the terrain, not sea level.
     int recordFrames = 0;     ///< With screenshotPath: fly forward, save this many frames.
@@ -118,6 +120,7 @@ private:
     std::shared_ptr<HgtTileStreamer> tiles_;
     std::unique_ptr<const ElevationSource> elevation_;
     bool isEarth_ = false;
+    Climate climate_;
     std::optional<LandCoverTexture> landCover_;
     Camera camera_{ellipsoid_};
     gl::RenderTarget renderTarget_;

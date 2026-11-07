@@ -18,6 +18,11 @@ constexpr double kAlpineWavelength = 8000.0; // peak-to-peak spacing of real ran
 constexpr double kAlpineBaseStd = 250.0;
 constexpr double kAlpineReliefGain = 0.45;
 constexpr double kAlpineMaxStd = 1000.0;
+// The relief thresholds and roughness below were set on 10' data (18.5 km nodes).
+constexpr double kReferenceSpacing = 18530.0;
+// Relief missing below the data resolution shrinks like wavelength^H. H = 1 puts 35 % of the
+// Valais above 30 degrees with 1' data (0.9: 43 %, 0.7: 59 %).
+constexpr double kHurst = 1.0;
 
 double smoothstep(double edge0, double edge1, double x) {
     const double t = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
@@ -27,9 +32,16 @@ double smoothstep(double edge0, double edge1, double x) {
 
 EarthTerrain::EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed,
                            std::shared_ptr<const HighResolutionTerrain> highResolution)
-    : grid_(std::move(grid)), relief_(grid_.reliefMap(kReliefSmoothing)), ellipsoid_(ellipsoid),
-      dataSpacing_(grid_.nodeSpacing(0, kMeanRadius)), detail_(seed),
-      alpine_(seed ^ 0x5DEECE66DF00D123ull), highResolution_(std::move(highResolution)) {}
+    : grid_(std::move(grid)), dataSpacing_(grid_.nodeSpacing(0, kMeanRadius)),
+      reliefBase_(std::clamp(
+          static_cast<int>(std::lround(std::log2(kReferenceSpacing / dataSpacing_))), 0,
+          grid_.levelCount() - 1)),
+      relief_(grid_.reliefMap(kReliefSmoothing, reliefBase_)), ellipsoid_(ellipsoid),
+      alpineWavelength_(std::min(kAlpineWavelength, dataSpacing_)),
+      alpineScale_(std::pow(alpineWavelength_ / kAlpineWavelength, kHurst)),
+      roughnessScale_(std::min(std::pow(dataSpacing_ / kReferenceSpacing, kHurst), 1.0)),
+      detail_(seed), alpine_(seed ^ 0x5DEECE66DF00D123ull),
+      highResolution_(std::move(highResolution)) {}
 
 EarthTerrain::EarthTerrain(ElevationGrid grid, const Ellipsoid& ellipsoid, std::uint64_t seed,
                            std::optional<ElevationGrid> highResolution)
@@ -87,16 +99,16 @@ double EarthTerrain::baseElevation(const Vec3d& dir, double latitude, double lon
     // Relief, not height, says where the mountains are (Tibet is high but flat): ~5 m on
     // plains, ~300 m in the Tatras, ~700 m in the Alps.
     const double height = std::max(measured, 0.0);
-    const double relief =
-        relief_.sample(latitude, longitude, std::max(level, kReliefReadLevel));
-    const double mountains = smoothstep(80.0, 400.0, relief);
-    const double roughness = 20.0 + 0.03 * height + 0.15 * relief;
+    const double relief = relief_.sample(latitude, longitude,
+                                         std::max(level - reliefBase_, kReliefReadLevel));
+    const double mountains = smoothstep(80.0, 400.0, relief) * alpineScale_;
+    const double roughness = (20.0 + 0.03 * height + 0.15 * relief) * roughnessScale_;
 
     // Peaks a few km apart: eroded fBm for clean flanks and flat valley floors, soft ridged
     // noise for crest lines. Zero-mean, so valleys deepen as much as peaks rise.
     double alpine = 0.0;
     if (mountains > 0.0) {
-        const double alpineBase = kMeanRadius / kAlpineWavelength;
+        const double alpineBase = kMeanRadius / alpineWavelength_;
         const double maxAlpine = maxFrequencyOnSphere / alpineBase;
         const double eroded = erodedFbm(alpine_, dir, alpineBase, kErodedParams, 1.0, maxAlpine);
         const double crests =

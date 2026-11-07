@@ -15,6 +15,7 @@ add_executable(orbis_tests
     test_landcover.cpp
     test_detail_noise.cpp
     test_clouds.cpp
+    test_climate.cpp
     test_tile_streaming.cpp)
 
 target_link_libraries(orbis_tests PRIVATE orbis::core Catch2::Catch2WithMain)

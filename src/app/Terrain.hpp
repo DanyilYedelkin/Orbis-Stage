@@ -7,6 +7,7 @@
 #include "core/geo/Ellipsoid.hpp"
 #include "core/scene/Camera.hpp"
 #include "core/terrain/ChunkBuilder.hpp"
+#include "core/terrain/Climate.hpp"
 #include "core/terrain/ElevationSource.hpp"
 #include "core/terrain/Quadtree.hpp"
 
@@ -31,6 +32,7 @@ struct TerrainDrawSettings {
     bool landCover = true;
     bool surfaceDetail = true;
     bool clouds = true;
+    float dayOfYear = 196.0f; ///< 0 = 1 January.
 };
 
 struct TerrainStats {
@@ -52,7 +54,10 @@ class Terrain {
 public:
     /// `clouds` must outlive the terrain.
     Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
-            const LodSettings& settings, const Atmosphere& atmosphere, const Clouds& clouds);
+            const LodSettings& settings, const Atmosphere& atmosphere, const Clouds& clouds,
+            const Climate& climate);
+
+    static constexpr unsigned kOceanicityUnit = 13;
 
     /// `lodCamera` drives selection; normally the real camera, a frozen copy when debugging.
     void update(const Camera& lodCamera, int viewportWidth, int viewportHeight,
@@ -103,6 +108,7 @@ private:
     const LandCoverTexture* landCover_ = nullptr;
     const Clouds* clouds_;
     DetailTexture detail_;
+    gl::Texture oceanicity_;
     gl::ShaderProgram shader_;
     gl::Buffer indexBuffer_; ///< Shared by every chunk.
     GLsizei indexCount_ = 0;

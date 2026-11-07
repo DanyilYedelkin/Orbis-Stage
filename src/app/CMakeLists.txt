@@ -31,6 +31,7 @@ orbis_embed_shaders(orbis
     "${PROJECT_SOURCE_DIR}/shaders/clouds_resolve.frag"
     "${PROJECT_SOURCE_DIR}/shaders/clouds_composite.frag"
     "${PROJECT_SOURCE_DIR}/shaders/tonemap.frag"
+    "${PROJECT_SOURCE_DIR}/shaders/climate.glsl"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.vert"
     "${PROJECT_SOURCE_DIR}/shaders/terrain.frag"
     "${PROJECT_SOURCE_DIR}/shaders/sky.vert"

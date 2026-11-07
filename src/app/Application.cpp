@@ -12,6 +12,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -49,7 +50,9 @@ WindowConfig makeWindowConfig(const AppOptions& options) {
 }
 
 constexpr std::uint64_t kTerrainSeed = 20261102;
-constexpr const char* kEarthDataFile = "earth_etopo10.oeg";
+// The 1' grid is generated locally (tools/prepare_etopo2022.py); 10' ships with the repository.
+constexpr std::array<const char*, 2> kEarthDataFiles = {"earth_etopo2022_60s.oeg",
+                                                        "earth_etopo10.oeg"};
 constexpr const char* kLandCoverFile = "earth_landcover.olc";
 
 } // namespace
@@ -58,9 +61,13 @@ std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& opt
                                                            const Ellipsoid& ellipsoid,
                                                            std::shared_ptr<HgtTileStreamer>* tiles) {
     if (options.world == World::Earth) {
-        const std::optional<std::filesystem::path> path =
-            options.elevationFile ? std::optional(std::filesystem::path(*options.elevationFile))
-                                  : findDataFile(kEarthDataFile);
+        std::optional<std::filesystem::path> path;
+        if (options.elevationFile) {
+            path = std::filesystem::path(*options.elevationFile);
+        }
+        for (const char* name : kEarthDataFiles) {
+            path = path ? path : findDataFile(name);
+        }
         if (path) {
             try {
                 const auto start = std::chrono::steady_clock::now();
@@ -91,28 +98,46 @@ std::unique_ptr<const ElevationSource> makeElevationSource(const AppOptions& opt
                                                             kTerrainSeed, std::move(streamer));
                 const auto ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - start);
-                std::cout << "Earth elevation: " << path->string() << " ("
-                          << static_cast<long long>(ms.count()) << " ms)\n";
+                const ElevationGrid& grid = earth->measuredGrid();
+                std::cout << "Earth elevation: " << path->string() << ", " << grid.width() << " x "
+                          << grid.height() << " (" << 21600.0 / (grid.width() - 1) << "'), "
+                          << static_cast<long long>(ms.count()) << " ms\n";
                 return earth;
             } catch (const std::exception& e) {
                 std::cerr << "Warning: " << e.what() << '\n';
             }
         } else {
-            std::cerr << "Warning: " << kEarthDataFile << " not found (run tools/prepare_etopo.py "
-                      << "or pass --elevation).\n";
+            std::cerr << "Warning: no Earth elevation grid found (run tools/prepare_etopo.py or "
+                      << "pass --elevation).\n";
         }
         std::cerr << "Falling back to the procedural planet.\n";
     }
     return std::make_unique<HeightField>(kTerrainSeed);
 }
 
+namespace {
+Climate makeClimate(const ElevationSource& elevation, const Ellipsoid& ellipsoid) {
+    const auto start = std::chrono::steady_clock::now();
+    Climate climate([&](double latitude, double longitude) {
+        const Vec3d dir = normalize(ellipsoid.geodeticToEcef({latitude, longitude, 0.0}));
+        return elevation.elevation(dir, 50000.0) < 0.0;
+    });
+    const auto ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start);
+    std::cout << "Climate: oceanicity map " << Climate::kMapWidth << " x " << Climate::kMapHeight
+              << " (" << static_cast<long long>(ms.count()) << " ms)\n";
+    return climate;
+}
+} // namespace
+
 Application::Application(const AppOptions& options)
     : options_(options), window_(makeWindowConfig(options)), ui_(window_.handle()),
       elevation_(makeElevationSource(options, ellipsoid_, &tiles_)),
       isEarth_(dynamic_cast<const EarthTerrain*>(elevation_.get()) != nullptr),
+      climate_(makeClimate(*elevation_, ellipsoid_)),
       atmosphere_(AtmosphereParameters{}, ellipsoid_), sky_(atmosphere_),
       clouds_(CloudParameters{.coverage = options.cloudCoverage}, atmosphere_, ellipsoid_),
-      terrain_(ellipsoid_, *elevation_, LodSettings{}, atmosphere_, clouds_) {
+      terrain_(ellipsoid_, *elevation_, LodSettings{}, atmosphere_, clouds_, climate_) {
     const double lutError = atmosphere_.validateAgainstCpu();
     std::cout << "Atmosphere LUTs ready; transmittance GPU vs CPU max difference " << lutError
               << '\n';
@@ -158,6 +183,7 @@ Application::Application(const AppOptions& options)
     drawSettings_.geomorph = options.geomorph;
     drawSettings_.shadows = options.shadows;
     drawSettings_.surfaceDetail = options.surfaceDetail;
+    drawSettings_.dayOfYear = static_cast<float>(options.dayOfYear);
     // Popping measurements diff consecutive frames; temporal cloud noise would swamp them.
     drawSettings_.clouds = options.clouds && options.recordFrames == 0;
     sunAzimuth_ = options.sunAzimuth;

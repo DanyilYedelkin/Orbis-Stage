@@ -117,6 +117,75 @@ TEST_CASE("file loading reports problems clearly", "[grid]") {
     std::filesystem::remove(path);
 }
 
+TEST_CASE("int16 storage matches float storage to the metre at every level", "[grid]") {
+    const auto f = [](double lat, double lon) {
+        return 3000.0 * std::sin(lat * kDeg) + 1500.0 * std::cos(3.0 * lon * kDeg) - 400.0;
+    };
+    const ElevationGrid precise = makeGrid(f);
+    std::vector<std::int16_t> nodes;
+    for (int r = 0; r < 181; ++r) {
+        for (int c = 0; c < 361; ++c) {
+            nodes.push_back(static_cast<std::int16_t>(std::lround(f(90.0 - r, -180.0 + c))));
+        }
+    }
+    const ElevationGrid compact(361, 181, std::move(nodes));
+    REQUIRE(compact.levelCount() == precise.levelCount());
+    for (int level = 0; level < compact.levelCount(); ++level) {
+        for (double lat = -89.0; lat <= 89.0; lat += 7.3) {
+            for (double lon = -180.0; lon < 180.0; lon += 11.9) {
+                // Each level rounds once more; Catmull-Rom can overshoot a rounding step by 60 %.
+                REQUIRE_THAT(compact.sample(lat * kDeg, lon * kDeg, level),
+                             WithinAbs(precise.sample(lat * kDeg, lon * kDeg, level),
+                                       0.8 * (level + 1)));
+            }
+        }
+    }
+}
+
+TEST_CASE("the pyramid continues through odd node counts", "[grid]") {
+    // 10': 1080 intervals = 2^3 * 135, so exact halving stops after three levels.
+    const auto f = [](double lat, double) { return 20.0 * lat + 7.0; };
+    const ElevationGrid g = makeGrid(f, 2161, 1081);
+    REQUIRE(g.levelCount() >= 8);
+    // A linear field survives the low-pass and the interpolation of the inexact levels, away
+    // from the poles, where the field is reflected. Level 6 has 10.6 degrees between nodes.
+    for (int level = 0; level <= 6; ++level) {
+        for (double lat = -45.0; lat <= 45.0; lat += 6.1) {
+            for (double lon = -180.0; lon <= 180.0; lon += 37.0) {
+                REQUIRE_THAT(g.sample(lat * kDeg, lon * kDeg, level), WithinAbs(f(lat, lon), 1e-2));
+            }
+        }
+    }
+}
+
+TEST_CASE("a relief map built at a coarser base level matches one built from that level",
+          "[grid]") {
+    const auto f = [](double lat, double lon) {
+        return 2000.0 * std::sin(5.0 * lat * kDeg) * std::cos(7.0 * lon * kDeg);
+    };
+    const ElevationGrid fine = makeGrid(f, 721, 361);
+    // Level 1 of `fine` as a grid of its own; Catmull-Rom reproduces the nodes exactly.
+    std::vector<float> nodes;
+    for (int r = 0; r < 181; ++r) {
+        for (int c = 0; c < 361; ++c) {
+            const double lat = (90.0 - r) * kDeg;
+            const double lon = (-180.0 + c) * kDeg;
+            nodes.push_back(static_cast<float>(fine.sample(lat, lon, 1.0)));
+        }
+    }
+    const ElevationGrid coarse(361, 181, std::move(nodes));
+    const ElevationGrid a = fine.reliefMap(2, 1);
+    const ElevationGrid b = coarse.reliefMap(2, 0);
+    for (double level : {0.0, 1.0, 2.5}) {
+        for (double lat = -80.0; lat <= 80.0; lat += 9.7) {
+            for (double lon = -180.0; lon < 180.0; lon += 13.1) {
+                REQUIRE_THAT(a.sample(lat * kDeg, lon * kDeg, level),
+                             WithinAbs(b.sample(lat * kDeg, lon * kDeg, level), 1e-2));
+            }
+        }
+    }
+}
+
 // --------------------------------------------------------------------------------- real Earth
 
 TEST_CASE("Earth data matches known geography", "[earth]") {
@@ -268,4 +337,47 @@ TEST_CASE("Earth mountains are as steep as real ones, plains stay flat", "[earth
     CHECK(alps > 12.0);
     CHECK(alps < 45.0);
     CHECK(steepShare(52.2, 5.0) < 0.5); // Netherlands
+}
+
+// ------------------------------------------------------------- ETOPO 2022 (generated locally)
+
+TEST_CASE("ETOPO 2022 1' resolves what 10' cannot", "[earth][etopo2022]") {
+    const auto path = std::filesystem::path(ORBIS_TEST_DATA_DIR) / "earth_etopo2022_60s.oeg";
+    if (!std::filesystem::exists(path)) {
+        SKIP("data/earth_etopo2022_60s.oeg not generated (tools/prepare_etopo2022.py)");
+    }
+    const ElevationGrid fine = ElevationGrid::load(path);
+    CHECK(fine.width() == 21601);
+    CHECK(fine.height() == 10801);
+    const auto at = [&](const ElevationGrid& g, double lat, double lon) {
+        return g.sample(lat * kDeg, lon * kDeg);
+    };
+    struct Place {
+        double lat, lon, real;
+    };
+    // Summits lose height to averaging in both grids, far less in the finer one.
+    for (const Place p : {Place{27.988, 86.925, 8849.0}, Place{45.833, 6.865, 4806.0},
+                          Place{-32.653, -70.011, 6961.0}}) {
+        const double coarseError = p.real - at(earthGrid(), p.lat, p.lon);
+        const double fineError = p.real - at(fine, p.lat, p.lon);
+        CHECK(fineError < 0.6 * coarseError);
+        CHECK(fineError > -300.0);
+    }
+    CHECK(at(fine, 11.35, 142.2) < -9000.0); // Challenger Deep area
+    CHECK(at(fine, 52.3, 5.3) < 10.0);       // Dutch polders
+
+    // Real data carries more of the mountains, so the synthetic part shrinks.
+    const EarthTerrain terrain(fine, kWgs84, 20261102);
+    const auto syntheticRms = [](const EarthTerrain& t) {
+        double sum = 0.0;
+        int n = 0;
+        for (double lat = 45.8; lat < 46.2; lat += 0.002, ++n) {
+            const double d = t.elevation(directionAt(lat, 7.6)) -
+                             t.measuredElevation(lat * kDeg, 7.6 * kDeg);
+            sum += d * d;
+        }
+        return std::sqrt(sum / n);
+    };
+    CHECK(syntheticRms(terrain) < 0.7 * syntheticRms(earth()));
+    CHECK(syntheticRms(terrain) > 50.0);
 }

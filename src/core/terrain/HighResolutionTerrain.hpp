@@ -48,5 +48,8 @@ private:
 
 /// Metres.
 inline constexpr double kHighResolutionFeather = 4000.0;
+/// Pyramid level of the coverage mask that is read: 16 nodes of blur fade the data out before a
+/// void without discarding much around it.
+inline constexpr double kCoverageLevel = 4.0;
 
 } // namespace orbis

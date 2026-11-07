@@ -22,14 +22,31 @@ constexpr std::uint64_t kDetailSeed = 0x0DE7A11u;
 constexpr double kDetailPeriod = 256.0; // must match terrain.frag
 
 double positiveModulo(double x, double period) { return x - std::floor(x / period) * period; }
+
+gl::Texture makeOceanicityTexture(const Climate& climate) {
+    GLuint id = 0;
+    glCreateTextures(GL_TEXTURE_2D, 1, &id);
+    gl::Texture texture{id};
+    glTextureStorage2D(id, 1, GL_R32F, Climate::kMapWidth, Climate::kMapHeight);
+    glTextureSubImage2D(id, 0, 0, 0, Climate::kMapWidth, Climate::kMapHeight, GL_RED, GL_FLOAT,
+                        climate.oceanicityMap().data());
+    glTextureParameteri(id, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(id, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTextureParameteri(id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return texture;
+}
 } // namespace
 
 Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
-                 const LodSettings& settings, const Atmosphere& atmosphere, const Clouds& clouds)
+                 const LodSettings& settings, const Atmosphere& atmosphere, const Clouds& clouds,
+                 const Climate& climate)
     : ellipsoid_(ellipsoid), lod_(ellipsoid, settings), clouds_(&clouds), detail_(kDetailSeed),
+      oceanicity_(makeOceanicityTexture(climate)),
       shader_(shaders::terrain_vert,
               gl::composeShader(std::string(shaders::common_glsl) + atmosphere.shaderPrelude() +
-                                    clouds.shaderPrelude(),
+                                    clouds.shaderPrelude() + climate.toGlsl() +
+                                    std::string(shaders::climate_glsl),
                                 shaders::terrain_frag),
               "terrain"),
       indexBuffer_(gl::createBuffer()),
@@ -48,6 +65,7 @@ Terrain::Terrain(const Ellipsoid& ellipsoid, const ElevationSource& elevation,
     shader_.set("uShadowMap", 2);
     shader_.set("uLandCover", 3);
     shader_.set("uDetailNoise", 4);
+    shader_.set("uOceanicity", static_cast<int>(kOceanicityUnit));
     shader_.set("uDetailGradientScale", 1.0f / detail_.gradientStd());
     const std::vector<std::uint16_t> indices = buildChunkIndices(settings.quadsPerEdge);
     indexCount_ = static_cast<GLsizei>(indices.size());
@@ -245,6 +263,8 @@ void Terrain::draw(const Camera& camera, float aspect, const TerrainDrawSettings
                                        static_cast<float>(positiveModulo(cameraPos.y, kDetailPeriod)),
                                        static_cast<float>(positiveModulo(cameraPos.z, kDetailPeriod))});
     detail_.bind(4);
+    glBindTextureUnit(kOceanicityUnit, oceanicity_.get());
+    shader_.set("uDayOfYear", settings.dayOfYear);
 
     const bool landCover = settings.landCover && landCover_ != nullptr;
     shader_.set("uLandCoverEnabled", landCover ? 1 : 0);

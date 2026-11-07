@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <vector>
 
@@ -21,6 +22,8 @@ public:
 
     /// Global grid, row-major, north to south.
     ElevationGrid(int width, int height, std::vector<float> nodes);
+    /// Stored as int16 at every level: half the memory, metre steps in the coarse levels.
+    ElevationGrid(int width, int height, std::vector<std::int16_t> nodes);
 
     /// Bounds in radians, rows from latMax to latMin.
     static ElevationGrid regional(int width, int height, std::vector<float> nodes, double latMax,
@@ -29,9 +32,9 @@ public:
     /// Metres at geodetic radians, or NaN. `level` is the mip level (fractional levels blend).
     double sample(double latitude, double longitude, double level = 0.0) const;
 
-    /// |full resolution - level `smoothing`| per node; sample it at level >= `smoothing`.
-    /// Global grids only.
-    ElevationGrid reliefMap(int smoothing) const;
+    /// |level `base` - level `base + smoothing`| at the nodes of level `base`. Its level k
+    /// matches level `base + k` here. Global grids only.
+    ElevationGrid reliefMap(int smoothing, int base = 0) const;
 
     /// 1 where there is data, 0 at voids; at coarse levels a blurred coverage field.
     ElevationGrid validityMask() const;
@@ -54,8 +57,10 @@ private:
         int rows = 0;
         bool global = true;
         std::vector<float> values;
+        std::vector<std::int16_t> compact; ///< Used instead of `values` when not empty.
 
         double at(int row, int column) const;
+        void set(int row, int column, double value);
     };
 
     ElevationGrid() = default;

@@ -152,6 +152,11 @@ void Application::buildDebugPanel(double dt) {
         bool changed = sliderDouble("azimuth", sunAzimuth_, 0.0f, 360.0f, "%.0f deg");
         changed |= sliderDouble("elevation", sunElevation_, -10.0f, 90.0f, "%.0f deg");
         ImGui::SliderFloat("intensity", &drawSettings_.sunIlluminance, 1.0f, 20.0f, "%.1f");
+        static constexpr std::array<const char*, 12> kMonths = {
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        const int month = std::clamp(static_cast<int>(drawSettings_.dayOfYear / 30.44f), 0, 11);
+        ImGui::SliderFloat("day of year", &drawSettings_.dayOfYear, 0.0f, 364.0f,
+                           kMonths[static_cast<std::size_t>(month)]);
         ImGui::Checkbox("shadows", &drawSettings_.shadows);
         ImGui::SameLine();
         ImGui::Checkbox("clouds", &drawSettings_.clouds);

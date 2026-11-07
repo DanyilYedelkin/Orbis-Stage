@@ -9,3 +9,5 @@ CMakeUserPresets.json
 __pycache__/
 *.pyc
 data/hgt/
+data/source/
+data/earth_etopo2022_60s.oeg

@@ -55,6 +55,8 @@ const vec3 kTundra       = vec3(0.150, 0.135, 0.100);
 const vec3 kMeadow       = vec3(0.110, 0.130, 0.050);
 const vec3 kRock         = vec3(0.110, 0.095, 0.080);
 const vec3 kSnow         = vec3(0.850, 0.870, 0.900);
+const vec3 kSeaIce       = vec3(0.550, 0.600, 0.650);
+const vec3 kDormant      = vec3(0.100, 0.085, 0.060);
 const float kAmbientGroundAlbedo = 0.15;
 
 // MODIS IGBP classes, see core/terrain/LandCover.hpp.
@@ -104,8 +106,88 @@ float valueNoise(vec3 p) {
                mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z) * 2.0 - 1.0;
 }
 
+// Leaf-off or dormant (winter, tropical dry season).
+const vec3 kClassDormant[18] = vec3[](
+    vec3(0.0),
+    vec3(0.016, 0.028, 0.019),
+    vec3(0.020, 0.050, 0.016),
+    vec3(0.040, 0.038, 0.032),   // bare larch
+    vec3(0.050, 0.044, 0.034),   // trunks and litter
+    vec3(0.032, 0.040, 0.026),
+    vec3(0.085, 0.080, 0.055),
+    vec3(0.230, 0.185, 0.115),
+    vec3(0.080, 0.080, 0.045),
+    vec3(0.200, 0.170, 0.100),   // straw
+    vec3(0.170, 0.145, 0.090),
+    vec3(0.070, 0.065, 0.045),
+    vec3(0.120, 0.095, 0.070),   // stubble and bare soil
+    vec3(0.120, 0.112, 0.100),
+    vec3(0.110, 0.095, 0.065),
+    kSnow,
+    vec3(0.360, 0.270, 0.160),
+    kLakeWater);
+
+// Autumn foliage; the summer colour where leaves do not turn.
+const vec3 kClassAutumn[18] = vec3[](
+    vec3(0.0),
+    vec3(0.018, 0.036, 0.020),
+    vec3(0.020, 0.055, 0.016),
+    vec3(0.110, 0.085, 0.020),   // golden larch
+    vec3(0.100, 0.050, 0.018),   // rust and orange
+    vec3(0.060, 0.045, 0.020),
+    vec3(0.090, 0.095, 0.050),
+    vec3(0.230, 0.185, 0.115),
+    vec3(0.050, 0.085, 0.030),
+    vec3(0.140, 0.140, 0.060),
+    vec3(0.085, 0.125, 0.040),
+    vec3(0.035, 0.065, 0.040),
+    vec3(0.095, 0.100, 0.045),
+    vec3(0.120, 0.112, 0.100),
+    vec3(0.065, 0.105, 0.035),
+    kSnow,
+    vec3(0.360, 0.270, 0.160),
+    kLakeWater);
+
+// How much lying snow the canopy hides from above.
+const float kClassCanopy[18] = float[](
+    0.0, 0.8, 0.8, 0.6, 0.55, 0.7, 0.3, 0.0, 0.4, 0.1, 0.0, 0.2, 0.0, 0.3, 0.2, 0.0, 0.0, 0.0);
+
+// Monthly means from climate.glsl drive phenology, snow and ice. Thresholds: growing season
+// above ~5 C, leaves keep longer in autumn than they take to come out in spring, snow lies where
+// the month is below freezing.
+struct Season {
+    float temperature;
+    float growth;  // 0 dormant .. 1 in full leaf
+    float autumn;
+    float snow;
+};
+
+Season seasonAt(vec3 unitDir, float latitude, float longitude, float h, float breakup) {
+    Season s;
+    s.temperature = climateTemperature(latitude, longitude, max(h, 0.0));
+    // Patches of ~7 and ~1.5 km from noise on the sphere: across a snowy plain the tiling
+    // detail texture would print its period.
+    float patches = 0.6 * valueNoise(unitDir * 900.0) + 0.4 * valueNoise(unitDir * 4100.0);
+    float t = s.temperature + 2.5 * patches + 0.4 * breakup;
+    float cooling = clamp(climateCooling(latitude), 0.0, 1.0);
+    s.growth = smoothstep(mix(3.0, 2.0, cooling), mix(10.0, 8.0, cooling), t);
+    // Savannas and grasslands of the outer tropics brown in the dry season (local winter).
+    float latDeg = degrees(abs(latitude));
+    float dryBelt = smoothstep(6.0, 12.0, latDeg) * (1.0 - smoothstep(22.0, 30.0, latDeg));
+    s.growth *= 1.0 - dryBelt * smoothstep(0.0, 0.6, climateWinterness(latitude));
+    s.autumn = smoothstep(0.2, 0.6, cooling) * (1.0 - smoothstep(11.0, 16.0, t));
+    s.snow = smoothstep(0.0, -5.0, t);
+    return s;
+}
+
+vec3 classAlbedo(uint cls, Season season) {
+    vec3 leaves = mix(kClassAlbedo[cls], kClassAutumn[cls], season.autumn);
+    return mix(kClassDormant[cls], leaves, season.growth);
+}
+
 struct Cover {
     vec3 albedo; // weighted by `land`
+    float canopy; // weighted by `land`
     float land;
     float ocean;
     float lake;
@@ -115,7 +197,7 @@ struct Cover {
 
 // Classes are categorical, so the 4 surrounding cells are fetched and their materials blended.
 // The lookup is domain-warped to turn the 5.6 km grid into irregular boundaries.
-Cover landCoverAt(vec3 unitDir, float latitude, float longitude) {
+Cover landCoverAt(vec3 unitDir, float latitude, float longitude, Season season) {
     vec2 size = vec2(textureSize(uLandCover, 0));
     // ~25, 6, 1.5 and 0.4 km wavelengths (unit direction * Earth radius / wavelength).
     vec3 q = unitDir * 255.0;
@@ -129,7 +211,7 @@ Cover landCoverAt(vec3 unitDir, float latitude, float longitude) {
     vec2 f = smoothstep(0.15, 0.85, fract(cell));
     ivec2 isize = ivec2(size);
 
-    Cover c = Cover(vec3(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
+    Cover c = Cover(vec3(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     for (int k = 0; k < 4; ++k) {
         ivec2 o = ivec2(k & 1, k >> 1);
         ivec2 t = ivec2((i0.x + o.x + isize.x) % isize.x, clamp(i0.y + o.y, 0, isize.y - 1));
@@ -140,7 +222,8 @@ Cover landCoverAt(vec3 unitDir, float latitude, float longitude) {
         } else if (cls == kClassInlandWater) {
             c.lake += w;
         } else {
-            c.albedo += kClassAlbedo[min(cls, 17u)] * w;
+            c.albedo += classAlbedo(min(cls, 17u), season) * w;
+            c.canopy += kClassCanopy[min(cls, 17u)] * w;
             c.land += w;
             c.snow += cls == kClassSnowIce ? w : 0.0;
             c.barren += cls == kClassBarren ? w : 0.0;
@@ -210,27 +293,36 @@ struct Surface {
     vec3 albedo;
     float bump;  // rock 1
     float water; // lakes
+    float snow;
 };
 
 // Land cover gives the lowland; altitudinal zones and cliffs come from elevation and slope,
 // which 5.6 km cells cannot resolve. `breakup` (std ~1) frays every threshold.
 Surface terrainSurface(float h, float slope, vec3 unitDir, float latitude, float longitude,
                        float breakup) {
-    Surface s = Surface(vec3(0.0), 0.0, 0.0);
+    Surface s = Surface(vec3(0.0), 0.0, 0.0, 0.0);
     if (h < 0.0) {
-        s.albedo = mix(kDeepWater, kShallowWater, smoothstep(-2500.0, 0.0, h));
+        float ice = smoothstep(-1.5, -5.0, climateTemperature(latitude, longitude, 0.0) +
+                                               2.0 * breakup);
+        s.albedo = mix(mix(kDeepWater, kShallowWater, smoothstep(-2500.0, 0.0, h)), kSeaIce, ice);
+        s.water = 1.0 - ice;
+        s.bump = 0.15 * ice;
         return s;
     }
+    Season season = seasonAt(unitDir, latitude, longitude, h, breakup);
     float latDeg = degrees(abs(latitude));
     float arid;
     vec3 lowland = stylisedLowland(h, latDeg, arid);
+    lowland = mix(mix(lowland, kDormant, 0.7), lowland, season.growth);
+    float canopy = 0.3;
     float coast = smoothstep(0.0, 8.0, h + 3.0 * breakup);
     float glacier = 0.0;
     float lake = 0.0;
     if (uLandCoverEnabled != 0) {
-        Cover cover = landCoverAt(unitDir, latitude, longitude);
+        Cover cover = landCoverAt(unitDir, latitude, longitude, season);
         if (cover.land > 0.0) {
             vec3 measured = cover.albedo / cover.land;
+            canopy = cover.canopy / cover.land;
             // "Barren" is sand only in the dry belts; elsewhere it is polar rock or alpine scree
             // (MODIS marks most of the Matterhorn's surroundings barren).
             float polar = smoothstep(55.0, 68.0, latDeg);
@@ -259,6 +351,10 @@ Surface terrainSurface(float h, float slope, vec3 unitDir, float latitude, float
     snowLine += 1800.0 * slope + 200.0 * breakup;
     float snow = max(smoothstep(snowLine, snowLine + 350.0, h),
                      glacier * (1.0 - smoothstep(0.35, 0.6, slope + 0.05 * breakup)));
+    // Seasonal snow slides off steep rock and is partly hidden by trees; lakes freeze over.
+    float seasonal = season.snow * (1.0 - smoothstep(0.45, 0.7, slope + 0.05 * breakup));
+    snow = max(snow, seasonal * (1.0 - 0.75 * canopy * (1.0 - rock)));
+    snow = max(snow, lake * smoothstep(-1.0, -4.0, season.temperature + breakup));
 
     vec3 c = mix(lowland, kSand, sand);
     c = mix(c, kMeadow, meadow);
@@ -267,6 +363,7 @@ Surface terrainSurface(float h, float slope, vec3 unitDir, float latitude, float
     float water = lake * (1.0 - snow);
     s.albedo = mix(c, kLakeWater, water);
     s.water = water;
+    s.snow = snow;
     s.bump = mix(mix(mix(0.4, 0.25, sand), 1.0, rock), 0.2, snow) * (1.0 - water);
     return s;
 }
@@ -306,7 +403,7 @@ void main() {
         float macro = 0.65 * valueNoise(unitDir * 2120.0) + 0.45 * valueNoise(unitDir * 9100.0) +
                       0.3 * detail.variation[0];
         float vegetation = clamp(albedo.g / max(albedo.r, 1e-3) - 1.0, 0.0, 1.0);
-        albedo *= exp(0.22 * macro + 0.10 * detail.variation[1]);
+        albedo *= exp((0.22 * macro + 0.10 * detail.variation[1]) * (1.0 - 0.6 * surface.snow));
         albedo = mix(albedo, albedo.ggg * vec3(1.25, 1.0, 0.55),
                      0.35 * vegetation * smoothstep(0.3, 1.5, macro));
         float fine = 0.10 * detail.height[1] + 0.12 * detail.height[2] + 0.08 * detail.height[3];
@@ -349,7 +446,7 @@ void main() {
     float skyView = 0.5 + 0.5 * dot(n, up);
     color += albedo / kPi * uSunIlluminance * (skyE * skyView + groundE * (1.0 - skyView)) * cavity;
 
-    if (fsIn.elevation < 0.0 || surface.water > 0.5) {
+    if (surface.water > 0.5) {
         vec3 halfVector = normalize(uSunDirection + toCamera);
         color += sunlight * pow(max(dot(geometricNormal, halfVector), 0.0), 600.0) * 0.5 * nDotL *
                  visibility;

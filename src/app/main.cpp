@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <string_view>
 
 namespace {
@@ -53,7 +54,7 @@ void printUsage() {
                  "             [--landcover file.olc | --no-landcover] [--check-alps] [--size WxH]\n"
                  "             [--view lat,lon,altKm,heading,pitch [--above-ground]] [--sun az,el]\n"
                  "             [--fov degrees] [--lod-colors] [--no-geomorph] [--no-shadows] [--no-detail]\n"
-                 "             [--clouds coverage | --no-clouds]\n"
+                 "             [--clouds coverage | --no-clouds] [--date MM-DD]\n"
                  "             [--screenshot file.ppm [--show-ui] [--record frames,metres]\n"
                  "             [--record-lod-only]]\n"
                  "Controls: RMB + mouse look | WASD move | Space/E up | Ctrl/Q down |\n"
@@ -131,6 +132,18 @@ int main(int argc, char** argv) {
             if (std::sscanf(argv[++i], "%lf", &options.cloudCoverage) != 1 ||
                 options.cloudCoverage < 0.0 || options.cloudCoverage > 1.0) {
                 std::cerr << "Invalid --clouds, expected a coverage between 0 and 1\n";
+                return 1;
+            }
+        } else if (arg == "--date" && i + 1 < argc) {
+            int month = 0;
+            int day = 0;
+            try {
+                if (std::sscanf(argv[++i], "%d-%d", &month, &day) != 2) {
+                    throw std::invalid_argument("format");
+                }
+                options.dayOfYear = orbis::dayOfYear(month, day);
+            } catch (const std::invalid_argument&) {
+                std::cerr << "Invalid --date, expected MM-DD e.g. 01-15\n";
                 return 1;
             }
         } else if (arg == "--no-detail") {

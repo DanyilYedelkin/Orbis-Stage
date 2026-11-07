@@ -22,9 +22,9 @@ inline constexpr double kErodedStd = 0.091;
 inline constexpr double kCrestMean = 0.762;
 inline constexpr double kCrestStd = 0.134;
 
-/// Measured elevation (ETOPO, ~18 km) plus synthetic detail below its resolution, band-limited
-/// to start where the data stops and scaled by the measured local relief. Optionally a
-/// high-resolution layer (.hgt tiles) replaces both where it has data.
+/// Measured elevation (ETOPO1 10' or ETOPO 2022 1') plus synthetic detail below its resolution,
+/// band-limited to start where the data stops and scaled by the measured local relief.
+/// Optionally a high-resolution layer (.hgt tiles) replaces both where it has data.
 class EarthTerrain final : public ElevationSource {
 public:
     /// `highResolution`: a static regional DEM.
@@ -56,9 +56,17 @@ private:
                          double sampleSpacing) const;
 
     ElevationGrid grid_;
+    double dataSpacing_; ///< Metres.
+    /// The relief map is built at the grid level nearest the 10' its thresholds were set at.
+    int reliefBase_;
     ElevationGrid relief_; ///< |data - smoothed data|: where, and how strongly, it is mountainous.
     Ellipsoid ellipsoid_;
-    double dataSpacing_; ///< Metres.
+    /// Synthetic peaks 8 km apart under 10' data; under finer data they start one octave above
+    /// its Nyquist wavelength, so they do not compete with real valleys, and shrink like a
+    /// fractal surface.
+    double alpineWavelength_;
+    double alpineScale_;
+    double roughnessScale_;
     PerlinNoise detail_;
     PerlinNoise alpine_;
     std::shared_ptr<const HighResolutionTerrain> highResolution_;
